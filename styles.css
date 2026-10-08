@@ -527,3 +527,8 @@ button { cursor: pointer; border: 0; background: none; }
 .switch-row input:checked + .switch::after { transform: translateX(20px); }
 
 .list-item .avatar { width: 36px; height: 36px; font-size: 15px; }
+
+.note-btn { display: block; width: 100%; text-align: left; color: var(--text); }
+.steps { margin: 0 0 16px; padding-left: 22px; display: grid; gap: 14px; line-height: 1.45; font-size: 15px; }
+.steps li::marker { font-weight: 900; color: var(--primary); }
+.steps .btn { margin: 8px 0 4px; text-decoration: none; color: inherit; }

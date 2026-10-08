@@ -24,24 +24,26 @@ C'est une *Progressive Web App* : elle n'a pas besoin de store.
    - **Android (Chrome)** : menu ⋮ → *Installer l'application*.
 3. L'icône apparaît sur l'écran d'accueil et l'application s'ouvre en plein écran, même sans réseau.
 
-## Activer le partage en groupe (une seule fois, ~5 minutes)
+## Activer le partage en groupe (une seule fois, ~5 minutes, depuis le téléphone)
 
-Pour que les téléphones du groupe partagent les mêmes données, l'application a besoin d'une petite base de données en ligne. On utilise **Firebase Realtime Database** de Google, gratuite pour cet usage (offre « Spark »).
+Pour que les téléphones du groupe partagent les mêmes données, l'application a besoin d'une petite base de données en ligne. On utilise **Firebase Realtime Database** de Google, gratuite pour cet usage. **Une seule personne** le fait ; les autres reçoivent automatiquement la configuration avec le lien d'invitation.
 
-1. Allez sur https://console.firebase.google.com et connectez-vous avec un compte Google.
-2. **Créer un projet** (par ex. `buffet-tracker`). Google Analytics n'est pas nécessaire.
-3. Dans le menu de gauche : **Créer → Realtime Database → Créer une base de données**. Choisissez un emplacement en Europe (`europe-west1`), puis le **mode verrouillé**.
-4. Onglet **Règles** : remplacez tout le contenu par celui du fichier [`database.rules.json`](database.rules.json), puis **Publier**.
-5. Roue dentée ⚙️ → **Paramètres du projet** → en bas, **Vos applications** → icône **`</>`** (Web). Donnez un nom, cliquez sur **Enregistrer l'application**. Firebase affiche un bloc `const firebaseConfig = { ... }`.
-6. Sur GitHub, ouvrez [`firebase-config.js`](firebase-config.js), cliquez sur le crayon ✏️ et remplacez `null` par ce bloc `{ ... }`. Vérifiez que la ligne `databaseURL` est présente (sinon, copiez l'adresse affichée en haut de la page Realtime Database). Validez avec **Commit changes**.
+Dans l'application : ⚙️ → **Activer le partage en groupe**, puis suivez les 4 étapes affichées :
 
-Au bout d'une minute, GitHub Pages publie la nouvelle version. Dans l'application, « Commencer un repas » propose alors **Partager avec le groupe**.
+1. **Ouvrir Firebase** (https://console.firebase.google.com) → « Créer un projet ». Google Analytics n'est pas nécessaire.
+2. Menu ☰ → **Créer → Realtime Database → Créer une base de données**. Emplacement en Europe (`europe-west1`), puis **mode verrouillé**.
+3. Onglet **Règles** : effacez tout, collez les règles (bouton **Copier les règles** dans l'application), puis **Publier**.
+4. Onglet **Données** : copiez l'adresse affichée en haut (`https://…firebasedatabase.app`), collez-la dans l'application et touchez **Activer**.
+
+L'application vérifie que la base répond et que les règles sont bien publiées.
+
+> Alternative pour un usage public : remplir `firebase-config.js` avec la configuration du projet. Tous les utilisateurs utilisent alors cette base sans rien activer.
 
 ### Utilisation en groupe
 
 1. Une personne **commence le repas**, entre son prénom et laisse « Partager avec le groupe » activé.
 2. Elle **envoie le lien** (WhatsApp, SMS…) ou donne le **code** affiché.
-3. Les autres ouvrent le lien, ou touchent **Rejoindre un repas** et tapent le code, puis choisissent leur prénom (ou s'ajoutent).
+3. Les autres ouvrent le lien (rien à configurer) puis choisissent leur prénom ou s'ajoutent. Une fois le lien utilisé une première fois, ils peuvent aussi rejoindre les repas suivants avec le seul code.
 4. Chacun tape sur ce qu'il mange. L'onglet **Bilan** montre le résumé du groupe et celui de chaque personne, en direct.
 5. **Terminer le repas** le termine pour tout le monde ; il apparaît dans l'historique de chacun.
 
@@ -64,7 +66,7 @@ npx http-server -c-1 .
 | `styles.css` | Design (thème clair/sombre, animations) |
 | `app.js` | Logique : repas, compteurs, bilan, historique, carte |
 | `sync.js` | Synchronisation des repas partagés (Firebase Realtime Database) |
-| `firebase-config.js` | Configuration de votre projet Firebase (à remplir) |
+| `firebase-config.js` | Configuration Firebase optionnelle (sinon, activation dans l'application) |
 | `database.rules.json` | Règles de sécurité à coller dans Firebase |
 | `sw.js` | Service worker pour le mode hors-ligne |
 | `manifest.webmanifest`, `icons/` | Installation sur l'écran d'accueil |

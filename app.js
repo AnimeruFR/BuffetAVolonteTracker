@@ -141,7 +141,9 @@
   // ---------- Actions ----------
   const syncError = (e) => { console.warn(e); toast('⚠️ Synchronisation impossible pour le moment'); };
   const withTimeout = (p, ms) => Promise.race([p, new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))]);
-  const inviteLink = (code) => location.origin + location.pathname + '?repas=' + code;
+  // Le lien transmet aussi l'adresse de la base : les invités n'ont rien à configurer.
+  const inviteLink = (code) => location.origin + location.pathname + '?repas=' + code
+    + (sync.fromFile() ? '' : '&db=' + encodeURIComponent(sync.dbUrl()));
 
   function startSession(name, myName, others, shared) {
     const names = [myName || 'Moi', ...others];
@@ -684,7 +686,7 @@
       <label class="switch-row">
         <span><b>👥 Partager avec le groupe</b><small>Chacun suit sur son téléphone, en temps réel.</small></span>
         <input type="checkbox" id="f-shared" checked /><span class="switch"></span>
-      </label>` : `<p class="note">ℹ️ Le partage entre téléphones n’est pas encore activé (voir le README).</p>`}
+      </label>` : `<button class="note note-btn" data-act="setup">👥 Pour partager le repas entre les téléphones du groupe, <u>activez le partage</u> (une seule fois).</button>`}
       <div class="field"><span>Autres membres (optionnel)</span>
         <div class="inline">
           <input class="input" id="f-person" placeholder="Prénom" maxlength="20" autocomplete="off" enterkeyhint="done" />
@@ -822,6 +824,55 @@
     });
   }
 
+  function sheetSetup() {
+    const existingUrl = sync.configured() ? sync.dbUrl() : '';
+    openSheet(`
+      <h3>Activer le partage 👥</h3>
+      <p class="lead">Une seule personne le fait, une seule fois (5 min). Les autres n’ont rien à configurer : le lien d’invitation suffit.</p>
+      <ol class="steps">
+        <li><b>Créez un projet Firebase</b> (gratuit, avec votre compte Google) :
+          <a class="btn btn-block" href="https://console.firebase.google.com/" target="_blank" rel="noopener">🔥 Ouvrir Firebase</a>
+          Touchez « Créer un projet », donnez un nom, et désactivez Google Analytics.</li>
+        <li><b>Créez la base</b> : menu ☰ → <b>Créer</b> (ou <i>Build</i>) → <b>Realtime Database</b> → « Créer une base de données ». Emplacement : <b>Belgique (europe-west1)</b>, puis <b>mode verrouillé</b>.</li>
+        <li><b>Onglet Règles</b> : effacez tout le texte, collez les règles ci-dessous, puis « Publier ».
+          <button class="btn btn-block" data-act="copy-rules">📋 Copier les règles</button></li>
+        <li><b>Onglet Données</b> : copiez l’adresse affichée en haut (elle commence par <i>https://</i>) et collez-la ici :</li>
+      </ol>
+      <input class="input" id="db-url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://…firebasedatabase.app" value="${esc(existingUrl)}" />
+      <p class="note" id="db-msg" hidden></p>
+      <div class="btn-row" style="margin-top:16px">
+        <button class="btn btn-ghost" data-act="close">Plus tard</button>
+        <button class="btn btn-primary" id="db-save">Activer</button>
+      </div>`, (root) => {
+      const msg = $('#db-msg', root);
+      const say = (text) => { msg.textContent = text; msg.hidden = false; };
+      $('#db-save', root).onclick = async () => {
+        const url = sync.parseDbUrl($('#db-url', root).value);
+        if (!url) { say('Adresse non reconnue. Elle ressemble à https://mon-projet-default-rtdb.europe-west1.firebasedatabase.app'); return; }
+        if (sync.ready() && url !== sync.dbUrl()) { sync.setDbUrl(url); location.reload(); return; }
+        sync.setDbUrl(url);
+        const btn = $('#db-save', root);
+        btn.disabled = true; btn.textContent = 'Vérification…';
+        try {
+          if (!sync.ready() && !(await sync.init())) throw new Error('sdk');
+          await withTimeout(sync.fetch('AAAAAA'), 10000);
+          ui.syncReady = true;
+          sync.onConnection((online) => { ui.online = online; if (current() && current().shared) render(); });
+          closeSheet();
+          render();
+          toast('Partage activé ✅ Commencez un repas !');
+        } catch (e) {
+          const denied = /permission/i.test(String((e && (e.code || e.message)) || ''));
+          say(denied ? 'La base répond, mais les règles ne sont pas publiées : refaites l’étape 3.'
+            : e.message === 'sdk' ? 'Impossible de charger Firebase : vérifiez votre connexion internet.'
+              : 'La base ne répond pas : vérifiez l’adresse et votre connexion.');
+        } finally {
+          btn.disabled = false; btn.textContent = 'Activer';
+        }
+      };
+    });
+  }
+
   function sheetAddPerson() {
     const s = current();
     if (!s) return;
@@ -947,6 +998,11 @@
               <span class="muted">›</span>
             </button>`).join('')}</div>`;
       }).join('')}
+      <div class="section-title">Partage en groupe</div>
+      ${sync.configured()
+        ? `<div class="note">✅ Activé${ui.syncReady ? '' : ' (connexion en attente)'}<br/><small class="muted" style="word-break:break-all">${esc(sync.dbUrl())}</small></div>
+           ${sync.fromFile() ? '' : '<button class="btn btn-ghost btn-block" data-act="setup">Changer de base</button>'}`
+        : '<button class="btn btn-primary btn-block" data-act="setup">👥 Activer le partage en groupe</button>'}
       <div class="section-title">Réglages</div>
       <div class="actions" style="margin-top:0">
         ${s && s.shared ? '<button class="btn btn-block" data-act="invite">🔗 Inviter le groupe</button>' : ''}
@@ -1090,6 +1146,8 @@
         sheetNewSession();
         break;
       case 'join': sheetJoin(); break;
+      case 'setup': sheetSetup(); break;
+      case 'copy-rules': copyText(sync.RULES, 'Règles copiées 📋 Collez-les dans Firebase'); break;
       case 'invite': if (current() && current().shared) sheetInvite(current()); break;
       case 'add-person': sheetAddPerson(); break;
       case 'send-invite': {
@@ -1168,7 +1226,9 @@
   // Lien d'invitation : ?repas=CODE
   const params = new URLSearchParams(location.search);
   const invitedCode = sync.normalizeCode(params.get('repas'));
-  if (params.has('repas')) history.replaceState(null, '', location.pathname);
+  const invitedDb = sync.parseDbUrl(params.get('db'));
+  if (invitedDb && !sync.fromFile()) sync.setDbUrl(invitedDb);
+  if (params.has('repas') || params.has('db')) history.replaceState(null, '', location.pathname);
 
   render();
 
@@ -1181,7 +1241,7 @@
     }
     if (invitedCode) {
       if (ok) sheetJoin(invitedCode);
-      else toast('Le partage en groupe n’est pas disponible sur ce téléphone');
+      else toast('Impossible de rejoindre : vérifiez votre connexion internet');
     }
     render();
   });

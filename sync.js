@@ -6,10 +6,35 @@ window.BuffetSync = (() => {
 
   const SDK = 'https://www.gstatic.com/firebasejs/10.12.2/';
   const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // sans 0/O ni 1/I/L, pour éviter les confusions
+  const DB_KEY = 'buffet-tracker-db';
+  const DB_URL_RE = /https:\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:firebaseio\.com|firebasedatabase\.app)/i;
+  // Règles de sécurité à coller dans Firebase (identiques à database.rules.json).
+  const RULES = JSON.stringify({
+    rules: {
+      '.read': false,
+      '.write': false,
+      meals: { $code: { '.read': '$code.matches(/^[A-HJKMNP-Z2-9]{6}$/)', '.write': '$code.matches(/^[A-HJKMNP-Z2-9]{6}$/)' } },
+    },
+  }, null, 2);
   let db = null;
 
-  const configured = () => !!(window.FIREBASE_CONFIG && window.FIREBASE_CONFIG.databaseURL);
+  // La base peut venir de firebase-config.js, ou avoir été collée dans l'application / reçue par un lien d'invitation.
+  function storedUrl() {
+    try { return localStorage.getItem(DB_KEY) || ''; } catch (e) { return ''; }
+  }
+  function config() {
+    if (window.FIREBASE_CONFIG && window.FIREBASE_CONFIG.databaseURL) return window.FIREBASE_CONFIG;
+    const url = storedUrl();
+    return url ? { databaseURL: url } : null;
+  }
+  const configured = () => !!config();
   const ready = () => !!db;
+  const dbUrl = () => (config() ? config().databaseURL.replace(/\/+$/, '') : '');
+  const parseDbUrl = (text) => { const m = String(text || '').match(DB_URL_RE); return m ? m[0].toLowerCase() : ''; };
+  const fromFile = () => !!(window.FIREBASE_CONFIG && window.FIREBASE_CONFIG.databaseURL);
+  function setDbUrl(url) {
+    try { localStorage.setItem(DB_KEY, url); } catch (e) { /* stockage indisponible */ }
+  }
 
   function loadScript(src) {
     return new Promise((resolve, reject) => {
@@ -28,7 +53,7 @@ window.BuffetSync = (() => {
         await loadScript(SDK + 'firebase-app-compat.js');
         await loadScript(SDK + 'firebase-database-compat.js');
       }
-      if (!window.firebase.apps.length) window.firebase.initializeApp(window.FIREBASE_CONFIG);
+      if (!window.firebase.apps.length) window.firebase.initializeApp(config());
       db = window.firebase.database();
       return true;
     } catch (e) {
@@ -48,8 +73,13 @@ window.BuffetSync = (() => {
   const ref = (path) => db.ref(path);
 
   return {
+    RULES,
     configured,
     ready,
+    dbUrl,
+    parseDbUrl,
+    setDbUrl,
+    fromFile,
     init,
     newCode,
     normalizeCode,
