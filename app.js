@@ -289,6 +289,16 @@
     return p;
   }
 
+  // Retire une personne du repas (par ex. un doublon), avec ses pièces comptées.
+  function removePerson(s, pid) {
+    s.people = s.people.filter((p) => p.id !== pid);
+    delete s.counts[pid];
+    if (ui.person === pid) ui.person = null;
+    if (ui.statsPerson === pid) ui.statsPerson = null;
+    save();
+    if (s.shared) sync.update(s.code, { ['people/' + pid]: null, ['counts/' + pid]: null }).catch(syncError);
+  }
+
   // Efface les pièces comptées d'un plat, pour toutes les personnes (et tout le groupe si partagé).
   function clearItemCounts(s, itemId) {
     const patch = {};
@@ -1064,6 +1074,17 @@
             <button class="btn btn-danger btn-sm" data-clear-item="${it.id}">Effacer</button>
             <button class="btn btn-sm" data-restore-item="${it.id}">Remettre</button>
           </div>`).join('')}</div>` : ''}
+      ${s && s.people.length > 1 ? `
+        <div class="section-title">👥 Membres du repas</div>
+        <div class="list">${s.people.map((p) => {
+          const pt = totals(s, p.id);
+          return `
+          <div class="list-item">
+            <span class="avatar" style="background:${p.color}">${esc(initial(p.name))}</span>
+            <span class="grow"><b>${esc(p.name)}</b>${p.id === s.me ? ' <small>(moi)</small>' : ''}<br/><small>${pt.total} pièce${pt.total > 1 ? 's' : ''} · ≈ ${fmtNum(pt.kcal)} kcal</small></span>
+            <button class="btn btn-danger btn-sm" data-remove-person="${p.id}">Retirer</button>
+          </div>`;
+        }).join('')}</div>` : ''}
       <div class="section-title">Partage en groupe</div>
       ${sync.configured()
         ? `<div class="note">✅ Activé${ui.syncReady ? '' : ' (connexion en attente)'}<br/><small class="muted" style="word-break:break-all">${esc(sync.dbUrl())}</small></div>
@@ -1184,6 +1205,22 @@
       if (sess && sess.shared && sync.ready()) {
         withTimeout(sync.fetch(sess.code), 8000).then((v) => { if (storeRemote(sess.code, v) && ui.viewSession === id) render(); }).catch(() => {});
       }
+      return;
+    }
+
+    const rmp = t.closest('[data-remove-person]');
+    if (rmp) {
+      const s = current();
+      const p = s && s.people.find((x) => x.id === rmp.dataset.removePerson);
+      if (!p) return;
+      const n = totals(s, p.id).total;
+      const msg = `Retirer ${p.name} du repas${s.shared ? ' pour tout le groupe' : ''} ?`
+        + (n ? `\n\nSes ${n} pièce${n > 1 ? 's' : ''} seront effacée${n > 1 ? 's' : ''} du bilan.` : '')
+        + (p.id === s.me ? '\n\nC’est vous sur ce téléphone.' : '');
+      if (!confirm(msg)) return;
+      removePerson(s, p.id);
+      sheetMenu(); render();
+      toast(`${p.name} a été retiré du repas`);
       return;
     }
 

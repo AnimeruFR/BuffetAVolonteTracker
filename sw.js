@@ -1,6 +1,6 @@
 // Service worker : met l'application en cache pour qu'elle fonctionne sans réseau au restaurant.
 // Changer ce numéro à chaque mise à jour : les téléphones installent alors la nouvelle version.
-const CACHE = 'buffet-tracker-v4';
+const CACHE = 'buffet-tracker-v5';
 const ASSETS = ['./', 'index.html', 'styles.css', 'app.js', 'sync.js', 'firebase-config.js', 'manifest.webmanifest',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png'];
 const SDK_HOST = 'www.gstatic.com'; // SDK Firebase (versionné, donc mis en cache durablement)
