@@ -9,6 +9,7 @@ Une application pour téléphone qui suit **ce que vous mangez au buffet à volo
 - **Partagé entre les téléphones du groupe** 👥 : chacun installe l'application, rejoint le repas avec un **code à 6 caractères** ou un **lien d'invitation**, et suit ce qu'il mange. Tous les compteurs, la carte et les bilans se mettent à jour en temps réel chez tout le monde. On peut aussi ajouter quelqu'un qui n'a pas de téléphone et taper pour lui.
 - **Bilan du groupe** 👥 : total des pièces, calories estimées, durée, moyenne par personne, résumé de chaque membre (rang, plats favoris) et répartition par catégorie et plat par plat, avec la part de chacun en couleur.
 - **Au fil du repas** 📈 : histogramme en temps réel des pièces mangées par tranche de 5 à 30 min (empilé par personne), rythme des 10 dernières minutes, record, temps depuis la dernière pièce, kcal moyennes par pièce et champions par catégorie.
+- **Photos** 📸 : un onglet pour partager les photos du repas avec le groupe (compressées automatiquement ; sur le téléphone pour un repas solo).
 - **Bilan par personne** 👤 : touchez un membre (ou son prénom en haut du Bilan) pour voir son résumé : rang, part du groupe, comparaison à la moyenne, plat préféré, plats différents, catégories et détail plat par plat.
 - **Historique** de tous vos buffets passés.
 - **Carte personnalisable** (⚙️) : environ 40 plats par défaut (sushis, entrées, plats chauds, grillades, fruits de mer, desserts, boissons), et vous pouvez ajouter, modifier ou supprimer des plats.
@@ -37,6 +38,8 @@ Dans l'application : ⚙️ → **Activer le partage en groupe**, puis suivez le
 4. Onglet **Données** : copiez l'adresse affichée en haut (`https://…firebasedatabase.app`), collez-la dans l'application et touchez **Activer**.
 
 L'application vérifie que la base répond et que les règles sont bien publiées.
+
+> **Base créée avant l'ajout des photos ?** Les règles ont changé : recopiez-les (onglet Photos → *Copier les nouvelles règles*, ou fichier `database.rules.json`) et publiez-les à nouveau dans Firebase.
 
 > Alternative pour un usage public : remplir `firebase-config.js` avec la configuration du projet. Tous les utilisateurs utilisent alors cette base sans rien activer.
 

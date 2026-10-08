@@ -7,6 +7,15 @@
         ".read": "$code.matches(/^[A-HJKMNP-Z2-9]{6}$/)",
         ".write": "$code.matches(/^[A-HJKMNP-Z2-9]{6}$/)"
       }
+    },
+    "photos": {
+      "$code": {
+        ".read": "$code.matches(/^[A-HJKMNP-Z2-9]{6}$/)",
+        ".write": "$code.matches(/^[A-HJKMNP-Z2-9]{6}$/)",
+        "$id": {
+          ".validate": "newData.child('data').isString() && newData.child('data').val().length < 2000000"
+        }
+      }
     }
   }
 }

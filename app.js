@@ -211,7 +211,11 @@
     return {
       id: code, code, shared: true, me: prev ? prev.me : null,
       name: v.name || 'Buffet à volonté', start: v.start || Date.now(), end: v.end || null,
-      people: list(v.people).map(fixColor), catalog: list(v.catalog), counts: v.counts || {}, items: v.items || {},
+      people: Object.entries(v.people || {})
+        .map(([id, x]) => ({ ...x, id }))
+        .sort((a, b) => (a.o || 0) - (b.o || 0))
+        .map(({ o, ...x }) => fixColor(o > 1e12 ? { ...x, joined: o } : x)),
+      catalog: list(v.catalog), counts: v.counts || {}, items: v.items || {},
       log: Object.entries(v.log || {}).map(([k, e]) => ({ ...e, k })).sort((a, b) => a.t - b.t),
     };
   }
@@ -291,10 +295,10 @@
   }
 
   function addPerson(s, name) {
-    const p = { id: uid(), name, color: PERSON_COLORS[s.people.length % PERSON_COLORS.length] };
+    const p = { id: uid(), name, color: PERSON_COLORS[s.people.length % PERSON_COLORS.length], joined: Date.now() };
     s.people.push(p);
     save();
-    if (s.shared) sync.update(s.code, { ['people/' + p.id]: { name: p.name, color: p.color, o: Date.now() } }).catch(syncError);
+    if (s.shared) sync.update(s.code, { ['people/' + p.id]: { name: p.name, color: p.color, o: p.joined } }).catch(syncError);
     return p;
   }
 
@@ -427,6 +431,7 @@
     const view = $('#view');
     if (ui.tab === 'track') view.innerHTML = s ? renderTracker(s) : renderWelcome();
     else if (ui.tab === 'stats') view.innerHTML = renderStats(ui.viewSession ? state.sessions.find((x) => x.id === ui.viewSession) : s);
+    else if (ui.tab === 'photos') view.innerHTML = renderPhotos(photoSession());
     else view.innerHTML = renderHistory();
   }
 
@@ -658,27 +663,27 @@
 
     // ----- Chronologie : histogramme des pièces mangées au fil du repas -----
     const tl = timeline(s, person ? person.id : null);
-    const untimed = t.total - tl.timed;
+    const hasChart = tl.timed > 0 || tl.estimated > 0;
     const chartColor = person ? person.color : isGroup ? null : 'var(--primary)';
     const chart = `
       <div class="section-title">📈 Au fil du repas${isLive ? ' <span class="live">● en direct</span>' : ''}</div>
       <div class="card chart-card">
         <div class="chart-sub">Pièces mangées par tranche de ${tl.step} min${isGroup && !person ? ', par personne' : ''}</div>
-        ${tl.timed > 0 ? `${legend}${histogram(tl, chartColor)}` : '<p class="muted chart-empty">La chronologie se remplit à chaque nouvelle pièce : les prochaines apparaîtront ici.</p>'}
-        ${untimed > 0 && tl.timed > 0 ? `<p class="hint muted" style="margin-top:8px">${untimed} pièce${untimed > 1 ? 's' : ''} comptée${untimed > 1 ? 's' : ''} avant la mise à jour n’apparai${untimed > 1 ? 'ssent' : 't'} pas dans le graphique.</p>` : ''}
+        ${hasChart ? `${legend}${histogram(tl, chartColor)}` : '<p class="muted chart-empty">La chronologie se remplit à chaque nouvelle pièce : les prochaines apparaîtront ici.</p>'}
+        ${tl.estimated > 0 ? `<p class="est-note"><i></i>En clair : ${tl.estimated} pièce${tl.estimated > 1 ? 's' : ''} comptée${tl.estimated > 1 ? 's' : ''} avant l’ajout de l’heure de chaque tap. Leur heure exacte n’existe pas : elles sont réparties sur le début du repas (estimation).</p>` : ''}
       </div>`;
 
     // ----- Rythme -----
     const now = Date.now();
     const evs = tl.events;
     const last10 = evs.filter((e) => e.t > now - 10 * 60000).reduce((a, e) => a + e.d, 0);
-    const best = tl.buckets.reduce((b, x) => (x.total > b.total ? x : b), { total: 0 });
+    const best = tl.buckets.reduce((b, x) => (x.real > b.real ? x : b), { real: 0 });
     const lastBite = evs.filter((e) => e.d > 0).reduce((m, e) => Math.max(m, e.t), 0);
     const hhmm = (ms) => new Date(ms).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
     const rhythm = tl.timed > 0 ? `
       <div class="kpis" style="margin-top:12px">
         ${isLive ? kpi('⚡', Math.max(0, last10), 'pièces ces 10 dernières min') : kpi('⚡', perMin, 'pièces / minute')}
-        ${kpi('🏔️', best.total, `record en ${tl.step} min (${hhmm(best.from)})`)}
+        ${kpi('🏔️', best.real || '—', best.real ? `record en ${tl.step} min (${hhmm(best.from)})` : `record en ${tl.step} min`)}
         ${kpi('⏳', lastBite ? (isLive ? fmtDuration(now - lastBite) : hhmm(lastBite)) : '—', isLive ? 'depuis la dernière pièce' : 'dernière pièce')}
         ${kpi('🔥', fmtNum(t.kcal / t.total), 'kcal par pièce en moyenne')}
       </div>` : '';
@@ -716,12 +721,16 @@
       <div class="section-title">🥇 Plat par plat</div>
       <div class="card bars">${legend}${itemBars}</div>
       <p class="hint muted">Les calories sont des estimations moyennes, à titre indicatif.</p>
+      <button class="btn btn-block" data-act="open-photos" style="margin-top:18px">📸 Photos du repas</button>
       ${actions}`;
   }
 
   const initial = (name) => (Array.from(name.trim())[0] || '?').toUpperCase();
 
   // Regroupe les événements horodatés par tranches de temps (5 à 30 min selon la durée du repas).
+  // Les pièces comptées avant l'horodatage (anciennes versions) n'ont pas d'heure : elles sont
+  // estimées, réparties uniformément entre le début du repas (ou l'arrivée de la personne)
+  // et le premier tap horodaté du repas.
   function timeline(s, personId) {
     const people = personId ? s.people.filter((p) => p.id === personId) : s.people;
     const ids = new Set(people.map((p) => p.id));
@@ -730,21 +739,38 @@
     const span = Math.max(end - s.start, 60000);
     const step = span <= 60 * 60000 ? 5 : span <= 120 * 60000 ? 10 : span <= 240 * 60000 ? 15 : 30;
     const size = step * 60000;
-    const count = Math.max(1, Math.ceil(span / size));
-    const buckets = Array.from({ length: count }, (_, i) => ({ from: s.start + i * size, to: s.start + (i + 1) * size, by: {}, total: 0 }));
+    const count = Math.max(1, Math.ceil((span - 30000) / size)); // pas de colonne vide qui commencerait « maintenant »
+    const buckets = Array.from({ length: count }, (_, i) => ({ from: s.start + i * size, to: s.start + (i + 1) * size, by: {}, est: {}, real: 0, estTotal: 0, total: 0 }));
     for (const e of events) {
       const i = Math.min(count - 1, Math.max(0, Math.floor((e.t - s.start) / size)));
       buckets[i].by[e.p] = (buckets[i].by[e.p] || 0) + e.d;
     }
+    const firstLogged = (s.log || []).length ? Math.min(...s.log.map((e) => e.t)) : end;
+    let estimated = 0;
+    for (const p of people) {
+      const timedP = events.filter((e) => e.p === p.id).reduce((a, e) => a + e.d, 0);
+      const missing = totals(s, p.id).total - Math.max(0, timedP);
+      if (missing <= 0) continue;
+      estimated += missing;
+      const from = Math.min(Math.max(s.start, p.joined || s.start), firstLogged - 60000);
+      const to = Math.max(firstLogged, from + 60000);
+      for (const b of buckets) {
+        const overlap = Math.max(0, Math.min(b.to, to) - Math.max(b.from, from));
+        if (overlap > 0) b.est[p.id] = (b.est[p.id] || 0) + (missing * overlap) / (to - from);
+      }
+    }
     for (const b of buckets) {
       for (const k of Object.keys(b.by)) b.by[k] = Math.max(0, b.by[k]);
-      b.total = Object.values(b.by).reduce((a, n) => a + n, 0);
+      b.real = Object.values(b.by).reduce((a, n) => a + n, 0);
+      b.estTotal = Object.values(b.est).reduce((a, n) => a + n, 0);
+      b.total = b.real + b.estTotal;
     }
     const timed = Math.max(0, events.reduce((a, e) => a + e.d, 0));
-    return { buckets, step, people, events, timed };
+    return { buckets, step, people, events, timed, estimated };
   }
 
-  // Histogramme en SVG : colonnes empilées par personne (couleur = la personne), 2 px d'écart entre segments.
+  // Histogramme en SVG : colonnes empilées par personne (couleur = la personne), 2 px d'écart entre
+  // segments ; la part estimée de chaque personne est dessinée en clair sous sa part horodatée.
   function histogram(tl, color) {
     const W = 340, H = 180, L = 28, R = 6, T = 12, B = 24;
     const max = Math.max(1, ...tl.buckets.map((b) => b.total));
@@ -763,7 +789,11 @@
     }
     tl.buckets.forEach((b, i) => {
       const x = L + i * slot + (slot - bw) / 2;
-      const segs = tl.people.map((p) => ({ p, n: b.by[p.id] || 0 })).filter((g) => g.n > 0);
+      const segs = [];
+      for (const p of tl.people) {
+        if ((b.est[p.id] || 0) > 0.05) segs.push({ p, n: b.est[p.id], est: true });
+        if (b.by[p.id] > 0) segs.push({ p, n: b.by[p.id], est: false });
+      }
       let cum = 0;
       segs.forEach((g, j) => {
         const y0 = y(cum), y1 = y(cum + g.n);
@@ -772,16 +802,20 @@
         const h = Math.max(0, y0 - y1 - gap);
         if (h <= 0) return;
         const fill = color || g.p.color;
+        const op = g.est ? ' fill-opacity="0.4"' : '';
         if (j === segs.length - 1) {
           const r = Math.min(4, h, bw / 2);
-          parts.push(`<path fill="${fill}" d="M${x},${y1 + h} V${y1 + r} Q${x},${y1} ${x + r},${y1} H${x + bw - r} Q${x + bw},${y1} ${x + bw},${y1 + r} V${y1 + h} Z"/>`);
+          parts.push(`<path fill="${fill}"${op} d="M${x},${y1 + h} V${y1 + r} Q${x},${y1} ${x + r},${y1} H${x + bw - r} Q${x + bw},${y1} ${x + bw},${y1 + r} V${y1 + h} Z"/>`);
         } else {
-          parts.push(`<rect fill="${fill}" x="${x}" y="${y1}" width="${bw}" height="${h}"/>`);
+          parts.push(`<rect fill="${fill}"${op} x="${x}" y="${y1}" width="${bw}" height="${h}"/>`);
         }
       });
       if (i % every === 0) parts.push(`<text class="ax" x="${x + bw / 2}" y="${H - 6}" text-anchor="middle">${hhmm(b.from)}</text>`);
-      const detail = tl.people.length > 1 ? segs.map((g) => `${g.p.name} ${g.n}`).join(' · ') : '';
-      const tip = `${hhmm(b.from)}–${hhmm(Math.min(b.to, Date.now()))} : ${b.total} pièce${b.total > 1 ? 's' : ''}${detail ? ' (' + detail + ')' : ''}`;
+      const per = tl.people.map((p) => ({ p, n: (b.by[p.id] || 0) + (b.est[p.id] || 0), est: (b.est[p.id] || 0) > 0.05 })).filter((g) => g.n >= 0.5);
+      const detail = tl.people.length > 1 ? per.map((g) => `${g.p.name} ${g.est ? '≈ ' + Math.round(g.n) : g.n}`).join(' · ') : '';
+      const estNote = b.estTotal >= 0.5 ? `, dont ≈ ${Math.round(b.estTotal)} estimée${Math.round(b.estTotal) > 1 ? 's' : ''}` : '';
+      const tot = b.estTotal >= 0.05 ? '≈ ' + Math.round(b.total) : b.total;
+      const tip = `${hhmm(b.from)}–${hhmm(Math.min(b.to, Date.now()))} : ${tot} pièce${Math.round(b.total) > 1 ? 's' : ''}${estNote}${detail ? ' (' + detail + ')' : ''}`;
       parts.push(`<rect class="hit" data-bar="${esc(tip)}" data-x="${((x + bw / 2) / W) * 100}" x="${L + i * slot}" y="${T}" width="${slot}" height="${plotH}"/>`);
     });
     parts.push(`<line class="axis" x1="${L}" x2="${W - R}" y1="${y(0)}" y2="${y(0)}"/>`);
@@ -818,6 +852,166 @@
         </div>
         <span class="bar-val">${n}</span>
       </div>`;
+  }
+
+  // ---------- Photos ----------
+  // Repas partagé : photos dans Firebase (photos/{CODE}) ; repas solo : sur le téléphone.
+  const PHOTO_KEY = (id) => 'buffet-photos-' + id;
+  function localPhotos(id) {
+    try { return JSON.parse(localStorage.getItem(PHOTO_KEY(id)) || '[]'); } catch (e) { return []; }
+  }
+  function saveLocalPhotos(id, list) {
+    try { localStorage.setItem(PHOTO_KEY(id), JSON.stringify(list)); return true; } catch (e) { return false; }
+  }
+  ui.photos = {};
+  let photoWatch = { code: null, stop: null };
+  function watchPhotos(code) {
+    if (photoWatch.code === code) return;
+    if (photoWatch.stop) photoWatch.stop();
+    photoWatch = { code, stop: null };
+    photoWatch.stop = sync.watchPhotos(code, (list) => {
+      ui.photos[code] = list;
+      ui.photosDenied = false;
+      if (ui.tab === 'photos') queueMicrotask(render);
+    }, () => {
+      ui.photosDenied = true;
+      photoWatch = { code: null, stop: null };
+      if (ui.tab === 'photos') queueMicrotask(render);
+    });
+  }
+
+  // Le repas affiché dans l'onglet Photos : celui ouvert depuis l'historique, sinon le repas en cours, sinon le dernier.
+  function photoSession() {
+    return (ui.viewSession && state.sessions.find((x) => x.id === ui.viewSession)) || current() || state.sessions[0] || null;
+  }
+  function photosOf(s) {
+    if (!s.shared) return localPhotos(s.id);
+    if (sync.ready() && !ui.photosDenied) watchPhotos(s.code); // refusé : on attend « Réessayer »
+    return ui.photos[s.code] || null;
+  }
+
+  function renderPhotos(s) {
+    if (!s) {
+      return `
+        <div class="empty">
+          <div class="big">📸</div>
+          <h2>Pas encore de photos</h2>
+          <p class="muted">Commencez un repas pour partager les photos de vos assiettes avec le groupe.</p>
+          <button class="btn btn-primary" data-act="new">Commencer un repas</button>
+        </div>`;
+    }
+    const list = photosOf(s);
+    const head = `
+      <div class="photos-head">
+        <div><h2>${esc(s.name)}</h2><small class="muted">${new Date(s.start).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })}${s.shared ? ' · partagées avec le groupe' : ' · sur ce téléphone'}</small></div>
+      </div>
+      <label class="btn btn-primary btn-block photo-add">
+        📷 Prendre ou ajouter une photo
+        <input type="file" id="photo-input" accept="image/*" multiple hidden />
+      </label>`;
+    if (s.shared && ui.photosDenied) {
+      return `${head}
+        <div class="card note-card">
+          <b>Encore une petite étape 🔧</b>
+          <p>Pour partager les photos, la personne qui a créé la base Firebase doit mettre à jour ses règles (une seule fois) :</p>
+          <ol class="steps">
+            <li>Touchez <b>Copier les nouvelles règles</b>.</li>
+            <li>Firebase → <b>Realtime Database</b> → onglet <b>Règles</b> : effacez tout, collez, puis <b>Publier</b>.</li>
+          </ol>
+          <div class="actions" style="margin-top:4px">
+            <button class="btn btn-block" data-act="copy-rules">📋 Copier les nouvelles règles</button>
+            <a class="btn btn-ghost btn-block" href="https://console.firebase.google.com/" target="_blank" rel="noopener">🔥 Ouvrir Firebase</a>
+            <button class="btn btn-primary btn-block" data-act="retry-photos">C’est fait, réessayer</button>
+          </div>
+        </div>`;
+    }
+    if (list === null) {
+      return `${head}<p class="hint muted">${sync.ready() ? 'Chargement des photos…' : 'Connexion…'}</p>`;
+    }
+    if (!list.length) {
+      return `${head}
+        <div class="empty" style="padding-top:24px">
+          <div class="big">🍣📸</div>
+          <p class="muted">Aucune photo pour ce repas. Immortalisez la première assiette !</p>
+        </div>`;
+    }
+    const color = (pid) => (s.people.find((p) => p.id === pid) || {}).color || 'var(--muted)';
+    return `${head}
+      <p class="hint muted" style="margin:14px 0 10px;text-align:left">${list.length} photo${list.length > 1 ? 's' : ''}</p>
+      <div class="photo-grid">
+        ${list.map((ph) => `
+          <button class="photo" data-photo="${esc(ph.id)}" aria-label="Photo de ${esc(ph.by || '')}">
+            <img src="${ph.data}" alt="" loading="lazy" />
+            <span class="photo-by"><i style="background:${color(ph.p)}"></i>${esc(ph.by || '')}</span>
+          </button>`).join('')}
+      </div>`;
+  }
+
+  function compressImage(file, maxSide = 1280, quality = 0.72) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        const k = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+        const w = Math.round(img.naturalWidth * k), h = Math.round(img.naturalHeight * k);
+        const c = document.createElement('canvas');
+        c.width = w; c.height = h;
+        c.getContext('2d').drawImage(img, 0, 0, w, h);
+        URL.revokeObjectURL(url);
+        let data = c.toDataURL('image/jpeg', quality);
+        if (data.length > 1900000) data = c.toDataURL('image/jpeg', 0.5);
+        resolve({ data, w, h });
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('image')); };
+      img.src = url;
+    });
+  }
+
+  async function addPhotos(files) {
+    const s = photoSession();
+    if (!s || !files.length) return;
+    const me = s.people.find((p) => p.id === s.me) || s.people.find((p) => p.id === ui.person) || s.people[0] || { id: '', name: '' };
+    toast(files.length > 1 ? `Envoi de ${files.length} photos…` : 'Envoi de la photo…');
+    let ok = 0;
+    for (const file of files) {
+      try {
+        const { data, w, h } = await compressImage(file);
+        const photo = { id: uid(), t: Date.now(), p: me.id, by: me.name, data, w, h };
+        if (s.shared) {
+          await withTimeout(sync.addPhoto(s.code, photo), 30000);
+        } else {
+          if (!saveLocalPhotos(s.id, [photo, ...localPhotos(s.id)])) { toast('Plus de place sur le téléphone pour les photos'); break; }
+        }
+        ok++;
+      } catch (e) {
+        if (/permission/i.test(String((e && (e.code || e.message)) || ''))) { ui.photosDenied = true; render(); return; }
+        toast(e && e.message === 'timeout' ? 'Envoi trop long : vérifiez votre connexion' : 'Impossible d’ajouter cette photo');
+      }
+    }
+    if (ok) { render(); toast(ok > 1 ? `${ok} photos ajoutées 📸` : 'Photo ajoutée 📸'); }
+  }
+
+  function sheetPhoto(s, ph) {
+    const when = new Date(ph.t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    openSheet(`
+      <img class="viewer-img" src="${ph.data}" alt="Photo de ${esc(ph.by || '')}" />
+      <p class="viewer-meta"><b>${esc(ph.by || '')}</b> · ${when}</p>
+      <div class="btn-row">
+        <button class="btn btn-danger" data-act="del-photo" data-id="${esc(ph.id)}">Supprimer</button>
+        <button class="btn" data-act="share-photo" data-id="${esc(ph.id)}">📤 Partager</button>
+        <button class="btn btn-primary" data-act="close">Fermer</button>
+      </div>`);
+  }
+
+  async function sharePhoto(ph) {
+    const blob = await (await fetch(ph.data)).blob();
+    const file = new File([blob], `buffet-${ph.id}.jpg`, { type: 'image/jpeg' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      navigator.share({ files: [file], title: 'Photo du buffet' }).catch(() => {});
+    } else {
+      const a = document.createElement('a');
+      a.href = ph.data; a.download = file.name; a.click();
+    }
   }
 
   function renderHistory() {
@@ -1353,6 +1547,14 @@
       return;
     }
 
+    const photoBtn = t.closest('[data-photo]');
+    if (photoBtn) {
+      const s = photoSession();
+      const ph = s && (photosOf(s) || []).find((x) => x.id === photoBtn.dataset.photo);
+      if (ph) sheetPhoto(s, ph);
+      return;
+    }
+
     const bar = t.closest('[data-bar]');
     const tipEl = bar && bar.closest('.chart') ? bar.closest('.chart').querySelector('.chart-tip') : null;
     if (tipEl) {
@@ -1427,6 +1629,28 @@
         sheetNewSession();
         break;
       case 'join': sheetJoin(); break;
+      case 'retry-photos':
+        ui.photosDenied = false; photoWatch = { code: null, stop: null }; render();
+        break;
+      case 'open-photos': ui.tab = 'photos'; render(); window.scrollTo(0, 0); break;
+      case 'share-photo': {
+        const s = photoSession();
+        const ph = s && (photosOf(s) || []).find((x) => x.id === act.dataset.id);
+        if (ph) sharePhoto(ph);
+        break;
+      }
+      case 'del-photo': {
+        const s = photoSession();
+        if (!s || !confirm('Supprimer cette photo' + (s.shared ? ' pour tout le groupe' : '') + ' ?')) return;
+        if (s.shared) {
+          ui.photos[s.code] = (ui.photos[s.code] || []).filter((x) => x.id !== act.dataset.id);
+          sync.removePhoto(s.code, act.dataset.id).catch(syncError);
+        } else {
+          saveLocalPhotos(s.id, localPhotos(s.id).filter((x) => x.id !== act.dataset.id));
+        }
+        closeSheet(); render(); toast('Photo supprimée');
+        break;
+      }
       case 'setup': sheetSetup(); break;
       case 'copy-rules': copyText(sync.RULES, 'Règles copiées 📋 Collez-les dans Firebase'); break;
       case 'invite': if (current() && current().shared) sheetInvite(current()); break;
@@ -1486,10 +1710,18 @@
         if (!confirm('Effacer tous les repas et la carte ? Cette action est irréversible.')) return;
         stopListening();
         localStorage.removeItem(STORAGE_KEY);
+        Object.keys(localStorage).filter((k) => k.startsWith('buffet-photos-')).forEach((k) => localStorage.removeItem(k));
         Object.assign(state, load());
         ui.tab = 'track'; ui.viewSession = null;
         closeSheet(); render(); toast('Données effacées');
         break;
+    }
+  });
+
+  document.addEventListener('change', (e) => {
+    if (e.target.id === 'photo-input') {
+      addPhotos(Array.from(e.target.files || []));
+      e.target.value = '';
     }
   });
 

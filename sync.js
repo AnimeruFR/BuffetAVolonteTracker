@@ -14,6 +14,13 @@ window.BuffetSync = (() => {
       '.read': false,
       '.write': false,
       meals: { $code: { '.read': '$code.matches(/^[A-HJKMNP-Z2-9]{6}$/)', '.write': '$code.matches(/^[A-HJKMNP-Z2-9]{6}$/)' } },
+      photos: {
+        $code: {
+          '.read': '$code.matches(/^[A-HJKMNP-Z2-9]{6}$/)',
+          '.write': '$code.matches(/^[A-HJKMNP-Z2-9]{6}$/)',
+          $id: { '.validate': "newData.child('data').isString() && newData.child('data').val().length < 2000000" },
+        },
+      },
     },
   }, null, 2);
   let db = null;
@@ -109,6 +116,22 @@ window.BuffetSync = (() => {
       const snap = await ref('meals/' + code).once('value');
       return snap.val();
     },
+
+    // Photos : stockées à part (photos/{CODE}/{id}) pour ne pas alourdir l'écoute des compteurs.
+    watchPhotos(code, cb, onError) {
+      const r = ref('photos/' + code);
+      const handler = (snap) => {
+        const v = snap.val() || {};
+        cb(Object.entries(v).map(([id, x]) => ({ ...x, id })).sort((a, b) => b.t - a.t));
+      };
+      r.on('value', handler, onError);
+      return () => r.off('value', handler);
+    },
+    addPhoto(code, photo) {
+      const { id, ...data } = photo;
+      return ref(`photos/${code}/${id}`).set(data);
+    },
+    removePhoto(code, id) { return ref(`photos/${code}/${id}`).set(null); },
 
     onConnection(cb) {
       ref('.info/connected').on('value', (snap) => cb(snap.val() === true));
