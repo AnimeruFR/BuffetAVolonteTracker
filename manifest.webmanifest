@@ -1,0 +1,17 @@
+{
+  "name": "Buffet Tracker",
+  "short_name": "Buffet",
+  "description": "Suivez ce que vous mangez au buffet à volonté, plat par plat.",
+  "lang": "fr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#fff7f0",
+  "theme_color": "#ff6b4a",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

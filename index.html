@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <title>Buffet Tracker</title>
+  <meta name="description" content="Suivez ce que vous mangez au buffet à volonté, plat par plat." />
+  <meta name="theme-color" content="#ff6b4a" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Buffet" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="topbar-title">
+        <span class="topbar-logo">🍽️</span>
+        <div>
+          <h1 id="title">Buffet Tracker</h1>
+          <p id="subtitle" class="muted"></p>
+        </div>
+      </div>
+      <button id="btn-menu" class="icon-btn" aria-label="Gérer la carte">⚙️</button>
+    </header>
+
+    <main id="view" class="view"></main>
+
+    <nav class="tabbar" role="tablist">
+      <button class="tab active" data-tab="track" role="tab">
+        <span class="tab-ico">🍣</span><span>Buffet</span>
+      </button>
+      <button class="tab" data-tab="stats" role="tab">
+        <span class="tab-ico">📊</span><span>Bilan</span>
+      </button>
+      <button class="tab" data-tab="history" role="tab">
+        <span class="tab-ico">🗓️</span><span>Historique</span>
+      </button>
+    </nav>
+  </div>
+
+  <div id="sheet-backdrop" class="sheet-backdrop" hidden></div>
+  <section id="sheet" class="sheet" hidden aria-modal="true" role="dialog"></section>
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
