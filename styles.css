@@ -532,3 +532,4 @@ button { cursor: pointer; border: 0; background: none; }
 .steps { margin: 0 0 16px; padding-left: 22px; display: grid; gap: 14px; line-height: 1.45; font-size: 15px; }
 .steps li::marker { font-weight: 900; color: var(--primary); }
 .steps .btn { margin: 8px 0 4px; text-decoration: none; color: inherit; }
+.btn-sm { padding: 8px 12px; font-size: 13px; border-radius: 12px; flex: none; }

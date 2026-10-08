@@ -289,6 +289,34 @@
     return p;
   }
 
+  // Efface les pièces comptées d'un plat, pour toutes les personnes (et tout le groupe si partagé).
+  function clearItemCounts(s, itemId) {
+    const patch = {};
+    for (const p of s.people) {
+      if (s.counts[p.id] && s.counts[p.id][itemId]) {
+        delete s.counts[p.id][itemId];
+        patch[`counts/${p.id}/${itemId}`] = null;
+      }
+    }
+    save();
+    if (s.shared && Object.keys(patch).length) sync.update(s.code, patch).catch(syncError);
+  }
+
+  // Plats retirés de la carte du repas mais qui ont encore des pièces comptées.
+  function orphanItems(s) {
+    if (!s) return [];
+    const ids = Object.keys(totals(s).byItem).filter((id) => !catalogOf(s).some((x) => x.id === id));
+    return ids.map((id) => ({ it: sessionItem(s, id), n: countFor(s, id) }));
+  }
+
+  function restoreItem(s, itemId) {
+    if (!s.catalog) s.catalog = state.catalog.map((x) => ({ ...x }));
+    const { id, name, emoji, cat, kcal } = sessionItem(s, itemId);
+    s.catalog.push({ id, name, emoji, cat, kcal });
+    save();
+    if (s.shared) sync.update(s.code, { ['catalog/' + id]: { name, emoji, cat, kcal, o: Date.now() } }).catch(syncError);
+  }
+
   function change(itemId, delta, { silent = false, pid = null } = {}) {
     const s = current();
     if (!s) return;
@@ -989,6 +1017,10 @@
       if (del) del.onclick = () => {
         if (!confirm(`Supprimer « ${existing.name} » de la carte ?`)) return;
         const s = current();
+        const counted = s ? countFor(s, existing.id) : 0;
+        if (counted && confirm(`${counted} « ${existing.name} » déjà compté${counted > 1 ? 's' : ''}${s.shared ? ' dans le groupe' : ''}. Les effacer aussi du bilan ?\n\nOK = effacer · Annuler = les garder`)) {
+          clearItemCounts(s, existing.id);
+        }
         if (s) {
           if (!s.catalog) s.catalog = state.catalog.map((x) => ({ ...x }));
           s.catalog = s.catalog.filter((x) => x.id !== existing.id);
@@ -1023,6 +1055,15 @@
               <span class="muted">›</span>
             </button>`).join('')}</div>`;
       }).join('')}
+      ${orphanItems(s).length ? `
+        <div class="section-title">🗑️ Retirés de la carte, mais encore comptés</div>
+        <div class="list">${orphanItems(s).map(({ it, n }) => `
+          <div class="list-item">
+            <span class="e">${it.emoji}</span>
+            <span class="grow"><b>${esc(it.name)}</b><br/><small>${n} compté${n > 1 ? 's' : ''}${s.shared ? ' dans le groupe' : ''}</small></span>
+            <button class="btn btn-danger btn-sm" data-clear-item="${it.id}">Effacer</button>
+            <button class="btn btn-sm" data-restore-item="${it.id}">Remettre</button>
+          </div>`).join('')}</div>` : ''}
       <div class="section-title">Partage en groupe</div>
       ${sync.configured()
         ? `<div class="note">✅ Activé${ui.syncReady ? '' : ' (connexion en attente)'}<br/><small class="muted" style="word-break:break-all">${esc(sync.dbUrl())}</small></div>
@@ -1143,6 +1184,26 @@
       if (sess && sess.shared && sync.ready()) {
         withTimeout(sync.fetch(sess.code), 8000).then((v) => { if (storeRemote(sess.code, v) && ui.viewSession === id) render(); }).catch(() => {});
       }
+      return;
+    }
+
+    const clr = t.closest('[data-clear-item]');
+    if (clr) {
+      const s = current();
+      const id = clr.dataset.clearItem;
+      const it = sessionItem(s, id);
+      if (!confirm(`Effacer les ${countFor(s, id)} « ${it.name} » comptés${s.shared ? ' pour tout le groupe' : ''} ?`)) return;
+      clearItemCounts(s, id);
+      sheetMenu(); render();
+      toast(`${it.emoji} ${it.name} effacé du bilan`);
+      return;
+    }
+    const rst = t.closest('[data-restore-item]');
+    if (rst) {
+      const s = current();
+      restoreItem(s, rst.dataset.restoreItem);
+      sheetMenu(); render();
+      toast('Plat remis sur la carte');
       return;
     }
 
