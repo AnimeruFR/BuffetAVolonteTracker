@@ -58,7 +58,11 @@
     ['Café', '☕', 'boisson', 5],
   ].map(([name, emoji, cat, kcal], i) => ({ id: 'd' + i, name, emoji, cat, kcal }));
 
-  const PERSON_COLORS = ['#ff6b4a', '#2ec4b6', '#7b61ff', '#ffb703', '#ef476f', '#118ab2', '#06d6a0', '#8d6e63'];
+  // Ordre fixe, validé pour le daltonisme (le graphique empile les personnes avec ces couleurs).
+  const PERSON_COLORS = ['#ff6b4a', '#2ec4b6', '#7b61ff', '#d98f00', '#ef476f', '#118ab2', '#2fa84f', '#b5651d'];
+  // Anciennes couleurs trop claires ou trop grises, remplacées à l'affichage.
+  const OLD_COLORS = { '#ffb703': '#d98f00', '#06d6a0': '#2fa84f', '#8d6e63': '#b5651d' };
+  const fixColor = (p) => { if (p && OLD_COLORS[p.color]) p.color = OLD_COLORS[p.color]; return p; };
 
   const EMOJI_CHOICES = ['🍣', '🍥', '🍙', '🍱', '🍤', '🥟', '🌯', '🥗', '🥣', '🍚', '🍜', '🍝', '🍛', '🍗', '🍖', '🥩',
     '🍢', '🌭', '🍔', '🍕', '🍟', '🧀', '🥚', '🦐', '🦀', '🦞', '🦑', '🦪', '🐟', '🥦', '🌽', '🥔',
@@ -83,6 +87,7 @@
   function migrate(data) {
     const fix = (it) => { const r = it && RENAMED[it.id]; if (r && it.name === r[0]) it.name = r[1]; };
     data.catalog.forEach(fix);
+    data.sessions.forEach((x) => (x.people || []).forEach(fixColor));
     data.sessions.filter((x) => !x.shared).forEach((x) => {
       (x.catalog || []).forEach(fix);
       Object.values(x.items || {}).forEach(fix);
@@ -141,14 +146,15 @@
       }
     }
     let total = 0, kcal = 0;
-    const byCat = {};
+    const byCat = {}, kcalByCat = {};
     for (const [itemId, n] of Object.entries(byItem)) {
       const it = sessionItem(session, itemId);
       total += n;
       kcal += n * (it.kcal || 0);
       byCat[it.cat] = (byCat[it.cat] || 0) + n;
+      kcalByCat[it.cat] = (kcalByCat[it.cat] || 0) + n * (it.kcal || 0);
     }
-    return { byItem, byCat, total, kcal };
+    return { byItem, byCat, kcalByCat, total, kcal };
   }
 
   // ---------- Actions ----------
@@ -169,6 +175,7 @@
       counts: {},
       items: {},
       catalog: state.catalog.map((x) => ({ ...x })),
+      log: [],
     };
     session.me = session.people[0].id;
     if (shared) {
@@ -192,7 +199,8 @@
       const { id, ...rest } = x;
       return [id, { ...rest, o: i }];
     }));
-    return { v: 1, name: s.name, start: s.start, end: s.end || null, people: keyed(s.people), catalog: keyed(s.catalog), counts: s.counts, items: s.items };
+    const log = Object.fromEntries((s.log || []).map(({ k, ...e }) => [k, e]));
+    return { v: 1, name: s.name, start: s.start, end: s.end || null, people: keyed(s.people), catalog: keyed(s.catalog), counts: s.counts, items: s.items, log };
   }
 
   function fromRemote(code, v, prev) {
@@ -203,7 +211,8 @@
     return {
       id: code, code, shared: true, me: prev ? prev.me : null,
       name: v.name || 'Buffet à volonté', start: v.start || Date.now(), end: v.end || null,
-      people: list(v.people), catalog: list(v.catalog), counts: v.counts || {}, items: v.items || {},
+      people: list(v.people).map(fixColor), catalog: list(v.catalog), counts: v.counts || {}, items: v.items || {},
+      log: Object.entries(v.log || {}).map(([k, e]) => ({ ...e, k })).sort((a, b) => a.t - b.t),
     };
   }
 
@@ -293,15 +302,27 @@
   function removePerson(s, pid) {
     s.people = s.people.filter((p) => p.id !== pid);
     delete s.counts[pid];
+    const patch = { ['people/' + pid]: null, ['counts/' + pid]: null, ...dropLog(s, (e) => e.p === pid) };
     if (ui.person === pid) ui.person = null;
     if (ui.statsPerson === pid) ui.statsPerson = null;
     save();
-    if (s.shared) sync.update(s.code, { ['people/' + pid]: null, ['counts/' + pid]: null }).catch(syncError);
+    if (s.shared) sync.update(s.code, patch).catch(syncError);
+  }
+
+  // Retire des événements de la chronologie ; renvoie les suppressions à envoyer au serveur.
+  function dropLog(s, match) {
+    const patch = {};
+    s.log = (s.log || []).filter((e) => {
+      if (!match(e)) return true;
+      patch['log/' + e.k] = null;
+      return false;
+    });
+    return patch;
   }
 
   // Efface les pièces comptées d'un plat, pour toutes les personnes (et tout le groupe si partagé).
   function clearItemCounts(s, itemId) {
-    const patch = {};
+    const patch = dropLog(s, (e) => e.i === itemId);
     for (const p of s.people) {
       if (s.counts[p.id] && s.counts[p.id][itemId]) {
         delete s.counts[p.id][itemId];
@@ -342,8 +363,15 @@
       s.items[itemId] = { ...it };
       if (s.shared) sync.update(s.code, { ['items/' + itemId]: { ...it } }).catch(syncError);
     }
+    // Chronologie : chaque +1 / −1 est horodaté (pour l'histogramme du bilan).
+    const ev = { k: uid(), t: Date.now(), p: pid, i: itemId, d: after - before };
+    (s.log = s.log || []).push(ev);
     save();
-    if (s.shared) sync.increment(s.code, pid, itemId, after - before).catch(syncError);
+    if (s.shared) {
+      sync.increment(s.code, pid, itemId, after - before).catch(syncError);
+      const { k, ...data } = ev;
+      sync.update(s.code, { ['log/' + k]: data }).catch(syncError);
+    }
     if (!silent) {
       undoAction = () => { change(itemId, before - after, { silent: true, pid }); render(); };
       const person = s.people.length > 1 ? ' · ' + s.people.find((p) => p.id === pid).name : '';
@@ -616,7 +644,7 @@
     const maxCat = Math.max(...catRows.map((r) => r[1]));
     const catBars = catRows.map(([cid, n]) => {
       const c = catById(cid);
-      return barRow(c.emoji, c.name, n, maxCat, Math.round((n / t.total) * 100) + ' %', splitBy(s, person, (pt) => pt.byCat[cid]));
+      return barRow(c.emoji, c.name, n, maxCat, `${Math.round((n / t.total) * 100)} % · ≈ ${fmtNum(t.kcalByCat[cid] || 0)} kcal`, splitBy(s, person, (pt) => pt.byCat[cid]));
     }).join('');
 
     const itemRows = Object.entries(t.byItem).sort((a, b) => b[1] - a[1]);
@@ -628,11 +656,61 @@
 
     const legend = isGroup && !person ? `<div class="legend">${s.people.map((p) => `<span><i style="background:${p.color}"></i>${esc(p.name)}</span>`).join('')}</div>` : '';
 
+    // ----- Chronologie : histogramme des pièces mangées au fil du repas -----
+    const tl = timeline(s, person ? person.id : null);
+    const untimed = t.total - tl.timed;
+    const chartColor = person ? person.color : isGroup ? null : 'var(--primary)';
+    const chart = `
+      <div class="section-title">📈 Au fil du repas${isLive ? ' <span class="live">● en direct</span>' : ''}</div>
+      <div class="card chart-card">
+        <div class="chart-sub">Pièces mangées par tranche de ${tl.step} min${isGroup && !person ? ', par personne' : ''}</div>
+        ${tl.timed > 0 ? `${legend}${histogram(tl, chartColor)}` : '<p class="muted chart-empty">La chronologie se remplit à chaque nouvelle pièce : les prochaines apparaîtront ici.</p>'}
+        ${untimed > 0 && tl.timed > 0 ? `<p class="hint muted" style="margin-top:8px">${untimed} pièce${untimed > 1 ? 's' : ''} comptée${untimed > 1 ? 's' : ''} avant la mise à jour n’apparai${untimed > 1 ? 'ssent' : 't'} pas dans le graphique.</p>` : ''}
+      </div>`;
+
+    // ----- Rythme -----
+    const now = Date.now();
+    const evs = tl.events;
+    const last10 = evs.filter((e) => e.t > now - 10 * 60000).reduce((a, e) => a + e.d, 0);
+    const best = tl.buckets.reduce((b, x) => (x.total > b.total ? x : b), { total: 0 });
+    const lastBite = evs.filter((e) => e.d > 0).reduce((m, e) => Math.max(m, e.t), 0);
+    const hhmm = (ms) => new Date(ms).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    const rhythm = tl.timed > 0 ? `
+      <div class="kpis" style="margin-top:12px">
+        ${isLive ? kpi('⚡', Math.max(0, last10), 'pièces ces 10 dernières min') : kpi('⚡', perMin, 'pièces / minute')}
+        ${kpi('🏔️', best.total, `record en ${tl.step} min (${hhmm(best.from)})`)}
+        ${kpi('⏳', lastBite ? (isLive ? fmtDuration(now - lastBite) : hhmm(lastBite)) : '—', isLive ? 'depuis la dernière pièce' : 'dernière pièce')}
+        ${kpi('🔥', fmtNum(t.kcal / t.total), 'kcal par pièce en moyenne')}
+      </div>` : '';
+
+    // ----- Records par catégorie (vue groupe) -----
+    let records = '';
+    if (isGroup && !person) {
+      const rows = Object.keys(t.byCat).map((cid) => {
+        const ranked = s.people.map((p) => ({ p, n: totals(s, p.id).byCat[cid] || 0 })).sort((a, b) => b.n - a.n);
+        const top = ranked.filter((r) => r.n === ranked[0].n);
+        return { c: catById(cid), top, n: ranked[0].n };
+      }).sort((a, b) => b.n - a.n);
+      records = `
+        <div class="section-title">🏆 Champions par catégorie</div>
+        <div class="card records">
+          ${rows.map(({ c, top, n }) => `
+            <div class="record">
+              <span class="e">${c.emoji}</span>
+              <span class="grow"><b>${esc(c.name)}</b><br/><small class="muted">${top.map((r) => `<i class="dot" style="background:${r.p.color}"></i>${esc(r.p.name)}`).join(' · ')}</small></span>
+              <span class="bar-val">${n}</span>
+            </div>`).join('')}
+        </div>`;
+    }
+
     return `${header}
       ${switcher}
       ${intro}
       ${kpis}
+      ${chart}
+      ${rhythm}
       ${members}
+      ${records}
       <div class="section-title">🍱 Par catégorie</div>
       <div class="card bars">${legend}${catBars}</div>
       <div class="section-title">🥇 Plat par plat</div>
@@ -642,6 +720,73 @@
   }
 
   const initial = (name) => (Array.from(name.trim())[0] || '?').toUpperCase();
+
+  // Regroupe les événements horodatés par tranches de temps (5 à 30 min selon la durée du repas).
+  function timeline(s, personId) {
+    const people = personId ? s.people.filter((p) => p.id === personId) : s.people;
+    const ids = new Set(people.map((p) => p.id));
+    const events = (s.log || []).filter((e) => ids.has(e.p));
+    const end = Math.max(s.end || Date.now(), ...events.map((e) => e.t));
+    const span = Math.max(end - s.start, 60000);
+    const step = span <= 60 * 60000 ? 5 : span <= 120 * 60000 ? 10 : span <= 240 * 60000 ? 15 : 30;
+    const size = step * 60000;
+    const count = Math.max(1, Math.ceil(span / size));
+    const buckets = Array.from({ length: count }, (_, i) => ({ from: s.start + i * size, to: s.start + (i + 1) * size, by: {}, total: 0 }));
+    for (const e of events) {
+      const i = Math.min(count - 1, Math.max(0, Math.floor((e.t - s.start) / size)));
+      buckets[i].by[e.p] = (buckets[i].by[e.p] || 0) + e.d;
+    }
+    for (const b of buckets) {
+      for (const k of Object.keys(b.by)) b.by[k] = Math.max(0, b.by[k]);
+      b.total = Object.values(b.by).reduce((a, n) => a + n, 0);
+    }
+    const timed = Math.max(0, events.reduce((a, e) => a + e.d, 0));
+    return { buckets, step, people, events, timed };
+  }
+
+  // Histogramme en SVG : colonnes empilées par personne (couleur = la personne), 2 px d'écart entre segments.
+  function histogram(tl, color) {
+    const W = 340, H = 180, L = 28, R = 6, T = 12, B = 24;
+    const max = Math.max(1, ...tl.buckets.map((b) => b.total));
+    const tick = [1, 2, 5, 10, 20, 25, 50, 100].find((x) => max / x <= 4) || Math.ceil(max / 4);
+    const top = Math.ceil(max / tick) * tick;
+    const plotH = H - T - B;
+    const y = (v) => T + plotH * (1 - v / top);
+    const slot = (W - L - R) / tl.buckets.length;
+    const bw = Math.max(4, Math.min(24, slot - 4));
+    const hhmm = (ms) => new Date(ms).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    const every = Math.ceil(tl.buckets.length / 5);
+    const parts = [];
+    for (let v = 0; v <= top; v += tick) {
+      parts.push(`<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/>`,
+        `<text class="ax" x="${L - 6}" y="${y(v) + 3.5}" text-anchor="end">${v}</text>`);
+    }
+    tl.buckets.forEach((b, i) => {
+      const x = L + i * slot + (slot - bw) / 2;
+      const segs = tl.people.map((p) => ({ p, n: b.by[p.id] || 0 })).filter((g) => g.n > 0);
+      let cum = 0;
+      segs.forEach((g, j) => {
+        const y0 = y(cum), y1 = y(cum + g.n);
+        cum += g.n;
+        const gap = j > 0 ? 2 : 0;
+        const h = Math.max(0, y0 - y1 - gap);
+        if (h <= 0) return;
+        const fill = color || g.p.color;
+        if (j === segs.length - 1) {
+          const r = Math.min(4, h, bw / 2);
+          parts.push(`<path fill="${fill}" d="M${x},${y1 + h} V${y1 + r} Q${x},${y1} ${x + r},${y1} H${x + bw - r} Q${x + bw},${y1} ${x + bw},${y1 + r} V${y1 + h} Z"/>`);
+        } else {
+          parts.push(`<rect fill="${fill}" x="${x}" y="${y1}" width="${bw}" height="${h}"/>`);
+        }
+      });
+      if (i % every === 0) parts.push(`<text class="ax" x="${x + bw / 2}" y="${H - 6}" text-anchor="middle">${hhmm(b.from)}</text>`);
+      const detail = tl.people.length > 1 ? segs.map((g) => `${g.p.name} ${g.n}`).join(' · ') : '';
+      const tip = `${hhmm(b.from)}–${hhmm(Math.min(b.to, Date.now()))} : ${b.total} pièce${b.total > 1 ? 's' : ''}${detail ? ' (' + detail + ')' : ''}`;
+      parts.push(`<rect class="hit" data-bar="${esc(tip)}" data-x="${((x + bw / 2) / W) * 100}" x="${L + i * slot}" y="${T}" width="${slot}" height="${plotH}"/>`);
+    });
+    parts.push(`<line class="axis" x1="${L}" x2="${W - R}" y1="${y(0)}" y2="${y(0)}"/>`);
+    return `<div class="chart"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Histogramme des pièces mangées par tranche de ${tl.step} minutes">${parts.join('')}</svg><div class="chart-tip" hidden></div></div>`;
+  }
 
   // Classement du groupe ; les ex æquo partagent le même rang et la même médaille.
   function rankPeople(s) {
@@ -1205,6 +1350,19 @@
       if (sess && sess.shared && sync.ready()) {
         withTimeout(sync.fetch(sess.code), 8000).then((v) => { if (storeRemote(sess.code, v) && ui.viewSession === id) render(); }).catch(() => {});
       }
+      return;
+    }
+
+    const bar = t.closest('[data-bar]');
+    const tipEl = bar && bar.closest('.chart') ? bar.closest('.chart').querySelector('.chart-tip') : null;
+    if (tipEl) {
+      // Ancrée à gauche, au centre ou à droite selon la colonne, pour ne jamais sortir de la carte.
+      const xPct = +bar.dataset.x;
+      tipEl.textContent = bar.dataset.bar;
+      tipEl.style.left = xPct < 35 ? '0' : xPct > 65 ? 'auto' : xPct + '%';
+      tipEl.style.right = xPct > 65 ? '0' : 'auto';
+      tipEl.style.transform = xPct < 35 || xPct > 65 ? 'translateY(-100%)' : 'translate(-50%, -100%)';
+      tipEl.hidden = false;
       return;
     }
 

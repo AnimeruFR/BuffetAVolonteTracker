@@ -533,3 +533,30 @@ button { cursor: pointer; border: 0; background: none; }
 .steps li::marker { font-weight: 900; color: var(--primary); }
 .steps .btn { margin: 8px 0 4px; text-decoration: none; color: inherit; }
 .btn-sm { padding: 8px 12px; font-size: 13px; border-radius: 12px; flex: none; }
+
+/* ---------- Chronologie (histogramme) ---------- */
+.chart-card { padding: 14px 12px 12px; }
+.chart-sub { font-size: 12px; font-weight: 700; color: var(--muted); margin: 0 4px 8px; }
+.chart-card .legend { margin: 0 4px 6px; }
+.chart { position: relative; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.chart .grid { stroke: var(--line); stroke-width: 1; }
+.chart .axis { stroke: var(--muted); stroke-width: 1; opacity: 0.5; }
+.chart .ax { fill: var(--muted); font-size: 10px; font-weight: 700; font-family: inherit; }
+.chart .hit { fill: transparent; cursor: pointer; }
+.chart .hit:hover, .chart .hit:active { fill: color-mix(in srgb, var(--text) 6%, transparent); }
+.chart-tip {
+  position: absolute; top: -6px; transform: translate(-50%, -100%);
+  max-width: 92%; padding: 8px 10px; border-radius: 10px;
+  background: var(--text); color: var(--bg);
+  font-size: 12px; font-weight: 700; line-height: 1.35; text-align: center;
+  box-shadow: var(--shadow-lg); pointer-events: none; z-index: 2;
+}
+.chart-empty { margin: 8px 4px; font-size: 14px; }
+.live { color: #22c55e; font-size: 12px; font-weight: 800; margin-left: 6px; }
+
+.records { display: grid; gap: 12px; }
+.record { display: flex; align-items: center; gap: 12px; }
+.record .e { font-size: 24px; width: 30px; text-align: center; }
+.record .grow { flex: 1; min-width: 0; font-size: 14px; }
+.record .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: 1px; }
