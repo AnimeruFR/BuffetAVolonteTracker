@@ -1244,8 +1244,22 @@
   // Rafraîchit la durée du repas en cours chaque minute.
   setInterval(() => { if (current() && ui.tab !== 'history' && $('#sheet').hidden) render(); }, 60000);
 
+  // Mises à jour automatiques : on vérifie à chaque retour sur l'application, et on recharge
+  // dès qu'une nouvelle version est installée (les données sont déjà enregistrées).
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-    window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+    const hadController = !!navigator.serviceWorker.controller;
+    let reloading = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController || reloading) return;
+      reloading = true;
+      location.reload();
+    });
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => {
+        document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+        setInterval(() => reg.update().catch(() => {}), 5 * 60000);
+      }).catch(() => {});
+    });
   }
 
   // Lien d'invitation : ?repas=CODE
