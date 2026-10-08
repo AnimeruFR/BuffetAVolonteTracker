@@ -6,11 +6,12 @@ Une application pour téléphone qui suit **ce que vous mangez au buffet à volo
 
 - **Un tap = une pièce** : grosses cartes avec emoji, compteur sur chaque plat, petite animation et vibration.
 - **Corriger facilement** : bouton `−` sur le plat, appui long, ou « Annuler » dans la notification.
-- **Plusieurs convives** : ajoutez des amis au début du repas, choisissez « Qui mange ? » et comparez dans le classement des gourmands 🏆.
-- **Bilan détaillé** : total des pièces, calories estimées, durée du repas, pièces par minute, répartition par catégorie et plat par plat.
+- **En groupe** : ajoutez les membres du groupe au début du repas, puis choisissez « Qui mange ? » avant de taper sur les plats.
+- **Bilan du groupe** 👥 : total des pièces, calories estimées, durée, moyenne par personne, résumé de chaque membre (rang, plats favoris) et répartition par catégorie et plat par plat, avec la part de chacun en couleur.
+- **Bilan par personne** 👤 : touchez un membre (ou son prénom en haut du Bilan) pour voir son résumé : rang, part du groupe, comparaison à la moyenne, plat préféré, plats différents, catégories et détail plat par plat.
 - **Historique** de tous vos buffets passés.
 - **Carte personnalisable** (⚙️) : environ 40 plats par défaut (sushis, entrées, plats chauds, grillades, fruits de mer, desserts, boissons), et vous pouvez ajouter, modifier ou supprimer des plats.
-- **Partage** du bilan (SMS, WhatsApp…).
+- **Partage** du bilan du groupe ou d'une personne (SMS, WhatsApp…).
 - **Fonctionne hors-ligne**, mode sombre automatique, et **aucune donnée ne quitte le téléphone** (stockage local).
 
 ## Installer sur son téléphone

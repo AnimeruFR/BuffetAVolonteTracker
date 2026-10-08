@@ -79,7 +79,7 @@
   }
 
   const state = load();
-  const ui = { tab: 'track', cat: 'all', person: null, viewSession: null };
+  const ui = { tab: 'track', cat: 'all', person: null, viewSession: null, statsPerson: null };
   let undoAction = null;
 
   function save() {
@@ -303,101 +303,174 @@
           <button class="btn btn-primary" data-act="new">Commencer un repas</button>
         </div>`;
     }
-    const t = totals(s);
+    const isGroup = s.people.length > 1;
+    if (!s.people.some((p) => p.id === ui.statsPerson)) ui.statsPerson = null;
+    const person = isGroup ? s.people.find((p) => p.id === ui.statsPerson) || null : null;
+    const t = totals(s, person ? person.id : null);
+    const group = totals(s);
     const isLive = s.id === state.currentId;
     const duration = (s.end || Date.now()) - s.start;
+
     const header = ui.viewSession ? `
       <div class="label-row"><button class="btn btn-ghost" data-act="back" style="padding:6px 0">‹ Historique</button>
       <span>${new Date(s.start).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })}</span></div>
       <h2 style="margin:0 4px 14px">${esc(s.name)}</h2>` : '';
 
+    // Sélecteur : résumé du groupe ou d'une personne.
+    const switcher = isGroup ? `
+      <div class="chips stats-switch">
+        <button class="chip ${person ? '' : 'active'}" data-stats-person="">👥 Groupe <span class="chip-count">${group.total}</span></button>
+        ${s.people.map((p) => `
+          <button class="chip ${person && person.id === p.id ? 'active' : ''}" data-stats-person="${p.id}">
+            <span class="dot" style="background:${p.color}"></span>${esc(p.name)}
+            <span class="chip-count">${totals(s, p.id).total}</span>
+          </button>`).join('')}
+      </div>` : '';
+
+    const actions = `
+      <div class="actions">
+        <button class="btn btn-ghost btn-block" data-act="share" data-sid="${s.id}">📤 Partager ${person ? 'le bilan de ' + esc(person.name) : isGroup ? 'le bilan du groupe' : 'le bilan'}</button>
+        ${isLive ? '<button class="btn btn-primary btn-block" data-act="end">✅ Terminer le repas</button>'
+          : `<button class="btn btn-danger btn-block" data-del="${s.id}">Supprimer ce repas</button>`}
+      </div>`;
+
     if (!t.total) {
-      return `${header}
+      return `${header}${switcher}
         <div class="empty">
           <div class="big">🥢</div>
-          <h2>L'assiette est vide</h2>
-          <p class="muted">Retournez à l'onglet Buffet et tapez sur ce que vous mangez.</p>
-          ${isLive ? '<button class="btn btn-primary" data-tab-go="track">Aller au buffet</button>' : ''}
+          <h2>${person ? esc(person.name) + ' n’a encore rien mangé' : 'L’assiette est vide'}</h2>
+          <p class="muted">Retournez à l'onglet Buffet et tapez sur ce qui est mangé.</p>
+          ${isLive ? `<button class="btn btn-primary" data-tab-go="track"${person ? ` data-track-person="${person.id}"` : ''}>Aller au buffet</button>` : ''}
         </div>
-        ${isLive ? '' : `<div class="actions"><button class="btn btn-danger btn-block" data-del="${s.id}">Supprimer ce repas</button></div>`}`;
+        ${!isLive && !group.total ? `<div class="actions"><button class="btn btn-danger btn-block" data-del="${s.id}">Supprimer ce repas</button></div>` : ''}`;
     }
 
-    const perMin = duration > 60000 ? (t.total / (duration / 60000)) : 0;
-    const kpis = `
-      <div class="kpis">
-        <div class="card kpi"><div class="kpi-ico">🍽️</div><div class="kpi-val">${t.total}</div><div class="kpi-lbl">pièces au total</div></div>
-        <div class="card kpi"><div class="kpi-ico">🔥</div><div class="kpi-val">${fmtNum(t.kcal)}</div><div class="kpi-lbl">kcal estimées</div></div>
-        <div class="card kpi"><div class="kpi-ico">⏱️</div><div class="kpi-val">${fmtDuration(duration)}</div><div class="kpi-lbl">durée du repas</div></div>
-        <div class="card kpi"><div class="kpi-ico">⚡</div><div class="kpi-val">${perMin ? perMin.toFixed(1).replace('.', ',') : '—'}</div><div class="kpi-lbl">pièces / minute</div></div>
+    const minutes = duration / 60000;
+    const perMin = minutes >= 1 ? (t.total / minutes).toFixed(1).replace('.', ',') : '—';
+    const kpi = (ico, val, lbl) => `<div class="card kpi"><div class="kpi-ico">${ico}</div><div class="kpi-val">${val}</div><div class="kpi-lbl">${lbl}</div></div>`;
+
+    let intro = '';
+    let kpis;
+    if (person) {
+      const ranked = rankPeople(s);
+      const me = ranked.find((r) => r.p.id === person.id);
+      const share = Math.round((t.total / group.total) * 100);
+      const avg = group.total / s.people.length;
+      const diff = Math.round(((t.total - avg) / avg) * 100);
+      const fav = Object.entries(t.byItem).sort((a, b) => b[1] - a[1])[0];
+      const favIt = sessionItem(s, fav[0]);
+      intro = `
+        <div class="card person-hero" style="--pc:${person.color}">
+          <div class="avatar avatar-lg" style="background:${person.color}">${esc(initial(person.name))}</div>
+          <div class="grow">
+            <div class="person-hero-name">${esc(person.name)} ${me.medal}</div>
+            <div class="muted">${me.rank === 1 ? '1er' : me.rank + 'e'} sur ${s.people.length} · ${share} % du groupe</div>
+            <div class="muted">${diff === 0 ? 'Pile dans la moyenne du groupe' : (diff > 0 ? '+' : '') + diff + ' % vs la moyenne du groupe'}</div>
+          </div>
+        </div>
+        <div class="card fav-card"><span class="fav-emoji">${favIt.emoji}</span><div><small class="muted">Plat préféré</small><b>${esc(favIt.name)} × ${fav[1]}</b></div></div>`;
+      kpis = `<div class="kpis">
+        ${kpi('🍽️', t.total, 'pièces mangées')}
+        ${kpi('🔥', fmtNum(t.kcal), 'kcal estimées')}
+        ${kpi('🧾', Object.keys(t.byItem).length, 'plats différents')}
+        ${kpi('⚡', perMin, 'pièces / minute')}
       </div>`;
+    } else {
+      kpis = `<div class="kpis">
+        ${kpi('🍽️', t.total, isGroup ? 'pièces pour le groupe' : 'pièces au total')}
+        ${kpi('🔥', fmtNum(t.kcal), 'kcal estimées')}
+        ${kpi('⏱️', fmtDuration(duration), 'durée du repas')}
+        ${isGroup ? kpi('👤', (t.total / s.people.length).toFixed(1).replace('.', ','), 'pièces / personne') : kpi('⚡', perMin, 'pièces / minute')}
+      </div>`;
+    }
+
+    // Résumé de chaque membre (vue groupe uniquement).
+    let members = '';
+    if (isGroup && !person) {
+      const max = Math.max(1, ...rankPeople(s).map((r) => r.t.total));
+      members = `
+        <div class="section-title">👥 Résumé par personne</div>
+        <div class="members">
+          ${rankPeople(s).map(({ p, t: pt, medal }) => {
+            const top = Object.entries(pt.byItem).sort((a, b) => b[1] - a[1]).slice(0, 4);
+            const topCat = Object.entries(pt.byCat).sort((a, b) => b[1] - a[1])[0];
+            return `
+              <button class="card member" data-stats-person="${p.id}">
+                <div class="person-row">
+                  <div class="avatar" style="background:${p.color}">${esc(initial(p.name))}</div>
+                  <div class="grow">
+                    <div class="bar-name"><span>${esc(p.name)} ${medal}</span><small>≈ ${fmtNum(pt.kcal)} kcal</small></div>
+                    <div class="bar-track"><div class="bar-fill" style="width:${(pt.total / max) * 100}%;background:${p.color}"></div></div>
+                  </div>
+                  <div class="bar-val">${pt.total}</div>
+                </div>
+                <div class="member-foot">
+                  <span class="member-top">${top.length ? top.map(([id, n]) => `<span>${sessionItem(s, id).emoji}<small>×${n}</small></span>`).join('') : '<small class="muted">Rien pour l’instant</small>'}</span>
+                  <small class="muted">${topCat ? catById(topCat[0]).emoji + ' ' + esc(catById(topCat[0]).name) : ''} ›</small>
+                </div>
+              </button>`;
+          }).join('')}
+        </div>`;
+    }
 
     const catRows = Object.entries(t.byCat).sort((a, b) => b[1] - a[1]);
     const maxCat = Math.max(...catRows.map((r) => r[1]));
     const catBars = catRows.map(([cid, n]) => {
       const c = catById(cid);
-      return barRow(c.emoji, c.name, n, maxCat, Math.round((n / t.total) * 100) + ' %');
+      return barRow(c.emoji, c.name, n, maxCat, Math.round((n / t.total) * 100) + ' %', splitBy(s, person, (pt) => pt.byCat[cid]));
     }).join('');
 
     const itemRows = Object.entries(t.byItem).sort((a, b) => b[1] - a[1]);
     const maxItem = itemRows[0][1];
     const itemBars = itemRows.map(([id, n]) => {
       const it = sessionItem(s, id);
-      return barRow(it.emoji, it.name, n, maxItem, it.kcal ? '≈ ' + fmtNum(n * it.kcal) + ' kcal' : '');
+      return barRow(it.emoji, it.name, n, maxItem, it.kcal ? '≈ ' + fmtNum(n * it.kcal) + ' kcal' : '', splitBy(s, person, (pt) => pt.byItem[id]));
     }).join('');
 
-    let podium = '';
-    if (s.people.length > 1) {
-      const medals = ['🥇', '🥈', '🥉'];
-      const ranked = s.people.map((p) => ({ p, t: totals(s, p.id) })).sort((a, b) => b.t.total - a.t.total);
-      const max = Math.max(1, ranked[0].t.total);
-      podium = `
-        <div class="section-title">🏆 Classement des gourmands</div>
-        <div class="card podium">
-          ${ranked.map(({ p, t: pt }, i) => {
-            const fav = Object.entries(pt.byItem).sort((a, b) => b[1] - a[1])[0];
-            const favIt = fav ? sessionItem(s, fav[0]) : null;
-            return `
-              <div class="person-row">
-                <div class="avatar" style="background:${p.color}">${esc(p.name.slice(0, 1).toUpperCase())}</div>
-                <div class="grow">
-                  <div class="bar-name"><span>${esc(p.name)}</span><small>${favIt ? 'fan de ' + favIt.emoji : ''} ≈ ${fmtNum(pt.kcal)} kcal</small></div>
-                  <div class="bar-track"><div class="bar-fill" style="width:${(pt.total / max) * 100}%;background:${p.color}"></div></div>
-                </div>
-                <div class="bar-val">${pt.total}</div>
-                <div class="medal">${pt.total ? medals[ranked.filter((r) => r.t.total > pt.total).length] || '' : ''}</div>
-              </div>`;
-          }).join('')}
-        </div>`;
-    }
-
-    const actions = isLive ? `
-      <div class="actions">
-        <button class="btn btn-ghost btn-block" data-act="share">📤 Partager le bilan</button>
-        <button class="btn btn-primary btn-block" data-act="end">✅ Terminer le repas</button>
-      </div>` : `
-      <div class="actions">
-        <button class="btn btn-ghost btn-block" data-act="share" data-sid="${s.id}">📤 Partager le bilan</button>
-        <button class="btn btn-danger btn-block" data-del="${s.id}">Supprimer ce repas</button>
-      </div>`;
+    const legend = isGroup && !person ? `<div class="legend">${s.people.map((p) => `<span><i style="background:${p.color}"></i>${esc(p.name)}</span>`).join('')}</div>` : '';
 
     return `${header}
+      ${switcher}
+      ${intro}
       ${kpis}
-      ${podium}
+      ${members}
       <div class="section-title">🍱 Par catégorie</div>
-      <div class="card bars">${catBars}</div>
+      <div class="card bars">${legend}${catBars}</div>
       <div class="section-title">🥇 Plat par plat</div>
-      <div class="card bars">${itemBars}</div>
+      <div class="card bars">${legend}${itemBars}</div>
       <p class="hint muted">Les calories sont des estimations moyennes, à titre indicatif.</p>
       ${actions}`;
   }
 
-  function barRow(emoji, name, n, max, side) {
+  const initial = (name) => (Array.from(name.trim())[0] || '?').toUpperCase();
+
+  // Classement du groupe ; les ex æquo partagent le même rang et la même médaille.
+  function rankPeople(s) {
+    const rows = s.people.map((p) => ({ p, t: totals(s, p.id) })).sort((a, b) => b.t.total - a.t.total);
+    return rows.map((r) => {
+      const rank = rows.filter((x) => x.t.total > r.t.total).length + 1;
+      return { ...r, rank, medal: r.t.total ? ['🥇', '🥈', '🥉'][rank - 1] || '' : '' };
+    });
+  }
+
+  // Répartition d'une barre entre les membres (vue groupe uniquement).
+  function splitBy(s, person, pick) {
+    if (person || s.people.length < 2) return null;
+    return s.people.map((p) => ({ name: p.name, color: p.color, n: pick(totals(s, p.id)) || 0 })).filter((x) => x.n);
+  }
+
+  function barRow(emoji, name, n, max, side, segments) {
+    const fill = segments && segments.length
+      ? `<div class="bar-stack" style="width:${(n / max) * 100}%">${segments.map((g) => `<div style="flex:${g.n};background:${g.color}"></div>`).join('')}</div>`
+      : `<div class="bar-fill" style="width:${(n / max) * 100}%"></div>`;
+    const who = segments && segments.length ? `<div class="bar-who">${segments.map((g) => `${esc(g.name)} ${g.n}`).join(' · ')}</div>` : '';
     return `
       <div class="bar-row">
         <span class="e">${emoji}</span>
         <div>
           <div class="bar-name"><span>${esc(name)}</span><small>${esc(side)}</small></div>
-          <div class="bar-track"><div class="bar-fill" style="width:${(n / max) * 100}%"></div></div>
+          <div class="bar-track">${fill}</div>
+          ${who}
         </div>
         <span class="bar-val">${n}</span>
       </div>`;
@@ -438,7 +511,7 @@
       <div class="hist-date"><b>${d.getDate()}</b><small>${d.toLocaleDateString('fr-FR', { month: 'short' }).replace('.', '')}</small></div>
       <div class="hist-main">
         <b>${esc(s.name)}</b>
-        <small>${s.people.length > 1 ? s.people.length + ' convives · ' : ''}≈ ${fmtNum(t.kcal)} kcal</small>
+        <small>${s.people.length > 1 ? s.people.length + ' personnes · ' : ''}≈ ${fmtNum(t.kcal)} kcal</small>
         <div class="hist-emojis">${top || '—'}</div>
       </div>
       <div class="hist-total">${t.total}</div>`;
@@ -466,7 +539,7 @@
       <label class="field"><span>Restaurant</span>
         <input class="input" id="f-name" placeholder="Ex : Sushi Wok Paradise" maxlength="40" autocomplete="off" />
       </label>
-      <div class="field"><span>Convives (optionnel)</span>
+      <div class="field"><span>Membres du groupe (optionnel)</span>
         <div class="inline">
           <input class="input" id="f-person" placeholder="Prénom" maxlength="20" autocomplete="off" enterkeyhint="done" />
           <button class="btn" id="f-add-person" type="button">Ajouter</button>
@@ -597,17 +670,24 @@
   }
 
   // ---------- Partage ----------
-  function shareSession(s) {
-    const t = totals(s);
-    const lines = [`🍽️ ${s.name} — ${new Date(s.start).toLocaleDateString('fr-FR')}`, `Total : ${t.total} pièces (≈ ${fmtNum(t.kcal)} kcal)`, ''];
+  function shareSession(s, personId) {
+    const person = s.people.find((p) => p.id === personId);
+    const t = totals(s, person ? person.id : null);
+    const lines = [`🍽️ ${s.name} — ${new Date(s.start).toLocaleDateString('fr-FR')}`];
+    if (person) lines.push(`👤 Bilan de ${person.name}`);
+    else if (s.people.length > 1) lines.push(`👥 Bilan du groupe (${s.people.length} personnes)`);
+    lines.push(`Total : ${t.total} pièces (≈ ${fmtNum(t.kcal)} kcal)`, '');
     Object.entries(t.byItem).sort((a, b) => b[1] - a[1]).forEach(([id, n]) => {
       const it = sessionItem(s, id);
       lines.push(`${it.emoji} ${it.name} × ${n}`);
     });
-    if (s.people.length > 1) {
-      lines.push('', '🏆 Classement :');
-      s.people.map((p) => [p.name, totals(s, p.id).total]).sort((a, b) => b[1] - a[1])
-        .forEach(([n, v], i, arr) => lines.push(`${['🥇', '🥈', '🥉'][arr.filter((x) => x[1] > v).length] || '•'} ${n} : ${v}`));
+    if (s.people.length > 1 && !person) {
+      lines.push('', '🏆 Par personne :');
+      rankPeople(s).forEach(({ p, t: pt, medal }) => {
+        const top = Object.entries(pt.byItem).sort((a, b) => b[1] - a[1]).slice(0, 3)
+          .map(([id, n]) => `${sessionItem(s, id).emoji}×${n}`).join(' ');
+        lines.push(`${medal || '•'} ${p.name} : ${pt.total}${top ? ' — ' + top : ''}`);
+      });
     }
     const text = lines.join('\n');
     if (navigator.share) {
@@ -666,7 +746,11 @@
     const tab = t.closest('.tab');
     if (tab) { ui.tab = tab.dataset.tab; ui.viewSession = null; render(); window.scrollTo(0, 0); return; }
 
+    const sp = t.closest('[data-stats-person]');
+    if (sp) { ui.statsPerson = sp.dataset.statsPerson || null; vibrate(8); render(); window.scrollTo(0, 0); return; }
+
     const go = t.closest('[data-tab-go]');
+    if (go && go.dataset.trackPerson) ui.person = go.dataset.trackPerson;
     if (go) { ui.tab = go.dataset.tabGo; ui.viewSession = null; render(); window.scrollTo(0, 0); return; }
 
     const person = t.closest('[data-person]');
@@ -676,7 +760,7 @@
     if (cat) { ui.cat = cat.dataset.cat; render(); return; }
 
     const open = t.closest('[data-open]');
-    if (open) { ui.viewSession = open.dataset.open; ui.tab = 'stats'; render(); window.scrollTo(0, 0); return; }
+    if (open) { ui.viewSession = open.dataset.open; ui.statsPerson = null; ui.tab = 'stats'; render(); window.scrollTo(0, 0); return; }
 
     const edit = t.closest('[data-edit]');
     if (edit) { sheetItemForm(state.catalog.find((x) => x.id === edit.dataset.edit)); return; }
@@ -709,8 +793,8 @@
         break;
       case 'back': ui.viewSession = null; ui.tab = 'history'; render(); break;
       case 'share': {
-        const s = act.dataset.sid ? state.sessions.find((x) => x.id === act.dataset.sid) : current();
-        if (s) shareSession(s);
+        const s = state.sessions.find((x) => x.id === act.dataset.sid);
+        if (s) shareSession(s, ui.statsPerson);
         break;
       }
       case 'end': {
@@ -722,6 +806,7 @@
         closeSheet();
         ui.tab = 'stats';
         ui.viewSession = id;
+        ui.statsPerson = null;
         render();
         window.scrollTo(0, 0);
         toast('Repas terminé, bravo ! 🎉');
