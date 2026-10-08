@@ -79,7 +79,7 @@
   }
 
   const state = load();
-  const ui = { tab: 'track', cat: 'all', person: null, viewSession: null, statsPerson: null };
+  const ui = { tab: 'track', cat: 'all', person: null, viewSession: null, statsPerson: null, syncReady: false, online: false };
   let undoAction = null;
 
   function save() {
@@ -88,6 +88,9 @@
 
   const current = () => state.sessions.find((s) => s.id === state.currentId) || null;
   const catById = (id) => CATEGORIES.find((c) => c.id === id) || { id, name: 'Autre', emoji: '🍽️' };
+  // Chaque repas a sa propre carte (partagée avec le groupe) ; la carte de l'appareil sert de modèle.
+  const catalogOf = (s) => (s && s.catalog) || state.catalog;
+  const sync = window.BuffetSync;
 
   // ---------- Helpers ----------
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -107,7 +110,8 @@
   // Item d'une session : on garde une copie de chaque plat utilisé pour que l'historique
   // reste lisible même si le plat est ensuite supprimé de la carte.
   function sessionItem(session, id) {
-    return state.catalog.find((x) => x.id === id) || (session.items && session.items[id]) || { id, name: 'Plat supprimé', emoji: '🍽️', cat: 'autre', kcal: 0 };
+    return catalogOf(session).find((x) => x.id === id) || (session.items && session.items[id])
+      || state.catalog.find((x) => x.id === id) || { id, name: 'Plat supprimé', emoji: '🍽️', cat: 'autre', kcal: 0 };
   }
 
   function countFor(session, itemId, personId) {
@@ -135,8 +139,12 @@
   }
 
   // ---------- Actions ----------
-  function startSession(name, peopleNames) {
-    const names = peopleNames.length ? peopleNames : ['Moi'];
+  const syncError = (e) => { console.warn(e); toast('⚠️ Synchronisation impossible pour le moment'); };
+  const withTimeout = (p, ms) => Promise.race([p, new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))]);
+  const inviteLink = (code) => location.origin + location.pathname + '?repas=' + code;
+
+  function startSession(name, myName, others, shared) {
+    const names = [myName || 'Moi', ...others];
     const session = {
       id: uid(),
       name: name || 'Buffet à volonté',
@@ -145,28 +153,134 @@
       people: names.map((n, i) => ({ id: uid(), name: n, color: PERSON_COLORS[i % PERSON_COLORS.length] })),
       counts: {},
       items: {},
+      catalog: state.catalog.map((x) => ({ ...x })),
     };
+    session.me = session.people[0].id;
+    if (shared) {
+      session.id = session.code = sync.newCode();
+      session.shared = true;
+      sync.create(session.code, toRemote(session)).catch(syncError);
+    }
+    leaveCurrent();
     state.sessions.unshift(session);
     state.currentId = session.id;
-    ui.person = session.people[0].id;
+    ui.person = session.me;
     ui.cat = 'all';
     save();
+    if (shared) listen(session.code);
+    return session;
   }
 
-  function change(itemId, delta, { silent = false } = {}) {
+  // ----- Repas partagés -----
+  function toRemote(s) {
+    const keyed = (arr) => Object.fromEntries(arr.map((x, i) => {
+      const { id, ...rest } = x;
+      return [id, { ...rest, o: i }];
+    }));
+    return { v: 1, name: s.name, start: s.start, end: s.end || null, people: keyed(s.people), catalog: keyed(s.catalog), counts: s.counts, items: s.items };
+  }
+
+  function fromRemote(code, v, prev) {
+    const list = (o) => Object.entries(o || {})
+      .map(([id, x]) => ({ ...x, id }))
+      .sort((a, b) => (a.o || 0) - (b.o || 0))
+      .map(({ o, ...x }) => x);
+    return {
+      id: code, code, shared: true, me: prev ? prev.me : null,
+      name: v.name || 'Buffet à volonté', start: v.start || Date.now(), end: v.end || null,
+      people: list(v.people), catalog: list(v.catalog), counts: v.counts || {}, items: v.items || {},
+    };
+  }
+
+  function storeRemote(code, v) {
+    if (!v) return null;
+    const i = state.sessions.findIndex((x) => x.id === code);
+    const s = fromRemote(code, v, i >= 0 ? state.sessions[i] : null);
+    if (i >= 0) state.sessions[i] = s; else state.sessions.unshift(s);
+    save();
+    return s;
+  }
+
+  let liveCode = null, stopLive = null;
+  function listen(code) {
+    if (liveCode === code && stopLive) return;
+    stopListening();
+    liveCode = code;
+    if (!sync.ready()) return; // l'écoute démarrera quand Firebase sera chargé
+    stopLive = sync.watch(code, (v) => {
+      const s = storeRemote(code, v);
+      if (!s) return;
+      if (s.end && state.currentId === code) {
+        state.currentId = null;
+        save();
+        stopListening();
+        ui.tab = 'stats'; ui.viewSession = code; ui.statsPerson = null;
+        toast('Repas terminé, bravo ! 🎉');
+      }
+      render();
+    });
+  }
+  function stopListening() {
+    if (stopLive) stopLive();
+    stopLive = null;
+    liveCode = null;
+  }
+
+  // Quitte le repas en cours : un repas partagé continue pour les autres, un repas solo est terminé.
+  function leaveCurrent() {
     const s = current();
     if (!s) return;
-    const pid = ui.person || s.people[0].id;
+    if (s.shared) { state.currentId = null; stopListening(); save(); } else endSession();
+  }
+
+  function joinMeal(code, v, personId) {
+    if (state.currentId !== code) leaveCurrent();
+    const s = storeRemote(code, v);
+    s.me = personId;
+    if (s.end) {
+      save();
+      ui.tab = 'stats'; ui.viewSession = code; ui.statsPerson = null;
+      closeSheet(); render();
+      toast('Ce repas est déjà terminé, voici son bilan');
+      return;
+    }
+    state.currentId = code;
+    ui.person = personId;
+    ui.tab = 'track'; ui.viewSession = null; ui.cat = 'all';
+    save();
+    listen(code);
+    closeSheet();
+    render();
+    toast(`Vous avez rejoint « ${s.name} » 🥢`);
+  }
+
+  function addPerson(s, name) {
+    const p = { id: uid(), name, color: PERSON_COLORS[s.people.length % PERSON_COLORS.length] };
+    s.people.push(p);
+    save();
+    if (s.shared) sync.update(s.code, { ['people/' + p.id]: { name: p.name, color: p.color, o: Date.now() } }).catch(syncError);
+    return p;
+  }
+
+  function change(itemId, delta, { silent = false, pid = null } = {}) {
+    const s = current();
+    if (!s) return;
+    pid = pid || ui.person || s.people[0].id;
     s.counts[pid] = s.counts[pid] || {};
     const before = s.counts[pid][itemId] || 0;
     const after = Math.max(0, before + delta);
     if (after === before) return;
     s.counts[pid][itemId] = after;
-    const it = state.catalog.find((x) => x.id === itemId);
-    if (it) s.items[itemId] = { ...it };
+    const it = catalogOf(s).find((x) => x.id === itemId);
+    // Copie du plat pour que l'historique reste lisible s'il est retiré de la carte.
+    if (it && !s.items[itemId]) {
+      s.items[itemId] = { ...it };
+      if (s.shared) sync.update(s.code, { ['items/' + itemId]: { ...it } }).catch(syncError);
+    }
     save();
+    if (s.shared) sync.increment(s.code, pid, itemId, after - before).catch(syncError);
     if (!silent) {
-      undoAction = () => { s.counts[pid][itemId] = before; save(); render(); };
+      undoAction = () => { change(itemId, before - after, { silent: true, pid }); render(); };
       const person = s.people.length > 1 ? ' · ' + s.people.find((p) => p.id === pid).name : '';
       toast(`${it ? it.emoji : ''} ${delta > 0 ? '+1' : '−1'} ${it ? it.name : ''}${person}`, true);
     }
@@ -178,6 +292,10 @@
     s.end = Date.now();
     state.currentId = null;
     save();
+    if (s.shared) {
+      sync.update(s.code, { end: s.end }).catch(syncError);
+      stopListening();
+    }
   }
 
   // ---------- Toast ----------
@@ -208,9 +326,10 @@
     document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === ui.tab));
     const s = current();
     $('#title').textContent = s ? s.name : 'Buffet Tracker';
-    $('#subtitle').textContent = s
-      ? `Commencé à ${new Date(s.start).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`
-      : 'Mangez, tapez, comptez 😋';
+    const since = s ? `Commencé à ${new Date(s.start).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}` : '';
+    $('#subtitle').innerHTML = !s ? 'Mangez, tapez, comptez 😋'
+      : s.shared ? `<span class="sync-dot ${ui.online ? 'on' : ''}"></span>${ui.online ? 'Synchronisé' : 'Hors ligne'} · ${since}`
+      : since;
 
     const view = $('#view');
     if (ui.tab === 'track') view.innerHTML = s ? renderTracker(s) : renderWelcome();
@@ -224,32 +343,44 @@
         <div class="welcome-plate">🍣</div>
         <h2>Prêt pour le buffet ?</h2>
         <p class="muted">Tapez sur chaque plat que vous prenez. À la fin, découvrez exactement ce que vous avez mangé.</p>
-        <button class="btn btn-primary" data-act="new">🍽️ Commencer un repas</button>
+        <div class="welcome-actions">
+          <button class="btn btn-primary" data-act="new">🍽️ Commencer un repas</button>
+          <button class="btn" data-act="join">🔗 Rejoindre un repas</button>
+        </div>
         <div class="welcome-steps">
           <div class="card"><span class="n">👆</span><div><b>Un tap = une pièce</b><small>Le bouton − corrige une erreur.</small></div></div>
-          <div class="card"><span class="n">👨‍👩‍👧</span><div><b>Entre amis</b><small>Ajoutez chaque convive et comparez.</small></div></div>
+          <div class="card"><span class="n">👨‍👩‍👧</span><div><b>En groupe</b><small>Chacun suit sur son téléphone, tout est partagé.</small></div></div>
           <div class="card"><span class="n">📊</span><div><b>Le bilan</b><small>Quantités, catégories, calories estimées.</small></div></div>
         </div>
       </div>`;
   }
 
   function renderTracker(s) {
-    if (!s.people.some((p) => p.id === ui.person)) ui.person = s.people[0].id;
+    if (!s.people.length) return '<div class="empty"><div class="big">⏳</div><h2>Chargement du repas…</h2></div>';
+    if (!s.people.some((p) => p.id === ui.person)) ui.person = s.people.some((p) => p.id === s.me) ? s.me : s.people[0].id;
     const t = totals(s, ui.person);
     const all = totals(s);
     const person = s.people.find((p) => p.id === ui.person);
 
-    const peopleChips = s.people.length > 1 ? `
+    const invite = s.shared ? `
+      <button class="card invite-bar" data-act="invite">
+        <span class="invite-ico">🔗</span>
+        <span class="grow"><b>Code du repas : <span class="code">${s.code}</span></b><small>Touchez pour inviter le groupe</small></span>
+        <span class="muted">›</span>
+      </button>` : '';
+
+    const peopleChips = s.people.length > 1 || s.shared ? `
       <div class="label-row"><span>Qui mange ?</span></div>
       <div class="chips">
         ${s.people.map((p) => `
           <button class="chip ${p.id === ui.person ? 'active' : ''}" data-person="${p.id}">
-            <span class="dot" style="background:${p.color}"></span>${esc(p.name)}
+            <span class="dot" style="background:${p.color}"></span>${esc(p.name)}${p.id === s.me && s.people.length > 1 ? ' <small>(moi)</small>' : ''}
             <span class="chip-count">${totals(s, p.id).total}</span>
           </button>`).join('')}
+        <button class="chip chip-add" data-act="add-person" aria-label="Ajouter une personne">＋</button>
       </div>` : '';
 
-    const cats = CATEGORIES.filter((c) => state.catalog.some((x) => x.cat === c.id));
+    const cats = CATEGORIES.filter((c) => catalogOf(s).some((x) => x.cat === c.id));
     const catChips = `
       <div class="chips" style="margin-top:12px">
         <button class="chip ${ui.cat === 'all' ? 'active' : ''}" data-cat="all">✨ Tout</button>
@@ -259,7 +390,7 @@
           </button>`).join('')}
       </div>`;
 
-    const items = state.catalog.filter((x) => ui.cat === 'all' || x.cat === ui.cat);
+    const items = catalogOf(s).filter((x) => ui.cat === 'all' || x.cat === ui.cat);
     const grid = items.map((it) => {
       const n = countFor(s, it.id, ui.person);
       return `
@@ -282,6 +413,7 @@
           ${s.people.length > 1 ? `<br/>👥 ${all.total} au total` : ''}
         </div>
       </div>
+      ${invite}
       ${peopleChips}
       ${catChips}
       <div class="grid">
@@ -327,11 +459,13 @@
           </button>`).join('')}
       </div>` : '';
 
+    const canRejoin = !isLive && s.shared && !s.end;
     const actions = `
       <div class="actions">
+        ${canRejoin ? `<button class="btn btn-primary btn-block" data-act="rejoin" data-sid="${s.id}">↩️ Reprendre ce repas</button>` : ''}
         <button class="btn btn-ghost btn-block" data-act="share" data-sid="${s.id}">📤 Partager ${person ? 'le bilan de ' + esc(person.name) : isGroup ? 'le bilan du groupe' : 'le bilan'}</button>
-        ${isLive ? '<button class="btn btn-primary btn-block" data-act="end">✅ Terminer le repas</button>'
-          : `<button class="btn btn-danger btn-block" data-del="${s.id}">Supprimer ce repas</button>`}
+        ${isLive ? `<button class="btn btn-primary btn-block" data-act="end">✅ Terminer le repas${s.shared ? ' pour tout le groupe' : ''}</button>`
+          : `<button class="btn btn-danger btn-block" data-del="${s.id}">${s.shared ? 'Retirer de mon historique' : 'Supprimer ce repas'}</button>`}
       </div>`;
 
     if (!t.total) {
@@ -342,7 +476,7 @@
           <p class="muted">Retournez à l'onglet Buffet et tapez sur ce qui est mangé.</p>
           ${isLive ? `<button class="btn btn-primary" data-tab-go="track"${person ? ` data-track-person="${person.id}"` : ''}>Aller au buffet</button>` : ''}
         </div>
-        ${!isLive && !group.total ? `<div class="actions"><button class="btn btn-danger btn-block" data-del="${s.id}">Supprimer ce repas</button></div>` : ''}`;
+        ${!isLive && !group.total ? actions : ''}`;
     }
 
     const minutes = duration / 60000;
@@ -511,7 +645,7 @@
       <div class="hist-date"><b>${d.getDate()}</b><small>${d.toLocaleDateString('fr-FR', { month: 'short' }).replace('.', '')}</small></div>
       <div class="hist-main">
         <b>${esc(s.name)}</b>
-        <small>${s.people.length > 1 ? s.people.length + ' personnes · ' : ''}≈ ${fmtNum(t.kcal)} kcal</small>
+        <small>${s.shared ? '👥 ' : ''}${s.people.length > 1 ? s.people.length + ' personnes · ' : ''}≈ ${fmtNum(t.kcal)} kcal${s.shared && !s.end && s.id !== state.currentId ? ' · en cours' : ''}</small>
         <div class="hist-emojis">${top || '—'}</div>
       </div>
       <div class="hist-total">${t.total}</div>`;
@@ -533,18 +667,30 @@
 
   function sheetNewSession() {
     const people = [];
+    const canShare = sync.ready();
+    const hint = canShare
+      ? 'Les autres rejoindront avec le code. Ajoutez ici ceux qui n’ont pas de téléphone.'
+      : 'Ajoutez les membres du groupe pour suivre chacun.';
     openSheet(`
       <h3>Nouveau repas 🍽️</h3>
       <p class="lead">Quelques secondes et c'est parti.</p>
       <label class="field"><span>Restaurant</span>
         <input class="input" id="f-name" placeholder="Ex : Sushi Wok Paradise" maxlength="40" autocomplete="off" />
       </label>
-      <div class="field"><span>Membres du groupe (optionnel)</span>
+      <label class="field"><span>Votre prénom</span>
+        <input class="input" id="f-me" placeholder="Ex : Emma" maxlength="20" autocomplete="given-name" value="${esc(state.myName || '')}" />
+      </label>
+      ${canShare ? `
+      <label class="switch-row">
+        <span><b>👥 Partager avec le groupe</b><small>Chacun suit sur son téléphone, en temps réel.</small></span>
+        <input type="checkbox" id="f-shared" checked /><span class="switch"></span>
+      </label>` : `<p class="note">ℹ️ Le partage entre téléphones n’est pas encore activé (voir le README).</p>`}
+      <div class="field"><span>Autres membres (optionnel)</span>
         <div class="inline">
           <input class="input" id="f-person" placeholder="Prénom" maxlength="20" autocomplete="off" enterkeyhint="done" />
           <button class="btn" id="f-add-person" type="button">Ajouter</button>
         </div>
-        <div class="people-edit" id="f-people"><small class="muted">Seul ? Laissez vide, on vous appellera « Moi ».</small></div>
+        <div class="people-edit" id="f-people"><small class="muted">${hint}</small></div>
       </div>
       <div class="btn-row">
         <button class="btn btn-ghost" data-act="close">Annuler</button>
@@ -554,8 +700,8 @@
       const input = $('#f-person', root);
       const draw = () => {
         list.innerHTML = people.length
-          ? people.map((p, i) => `<span class="chip"><span class="dot" style="background:${PERSON_COLORS[i % PERSON_COLORS.length]}"></span>${esc(p)}<button data-rm="${i}" aria-label="Retirer">✕</button></span>`).join('')
-          : '<small class="muted">Seul ? Laissez vide, on vous appellera « Moi ».</small>';
+          ? people.map((p, i) => `<span class="chip"><span class="dot" style="background:${PERSON_COLORS[(i + 1) % PERSON_COLORS.length]}"></span>${esc(p)}<button data-rm="${i}" aria-label="Retirer">✕</button></span>`).join('')
+          : `<small class="muted">${hint}</small>`;
       };
       const add = () => {
         const v = input.value.trim();
@@ -569,15 +715,136 @@
         if (b) { people.splice(+b.dataset.rm, 1); draw(); }
       });
       $('#f-start', root).onclick = () => {
+        const shared = canShare && $('#f-shared', root).checked;
+        const me = $('#f-me', root).value.trim();
+        if (shared && !me) { $('#f-me', root).focus(); toast('Indiquez votre prénom pour le groupe'); return; }
         const pending = input.value.trim();
         if (pending) people.push(pending);
-        startSession($('#f-name', root).value.trim(), people);
-        closeSheet();
+        if (me) state.myName = me;
+        const session = startSession($('#f-name', root).value.trim(), me, people, shared);
         ui.tab = 'track';
         ui.viewSession = null;
         render();
-        toast('Bon appétit ! 🥢');
+        if (shared) sheetInvite(session);
+        else { closeSheet(); toast('Bon appétit ! 🥢'); }
       };
+    });
+  }
+
+  function sheetInvite(s) {
+    const link = inviteLink(s.code);
+    openSheet(`
+      <h3>Inviter le groupe 🔗</h3>
+      <p class="lead">Envoyez le lien, ou donnez le code : chacun l’entre dans « Rejoindre un repas ».</p>
+      <div class="code-box" aria-label="Code du repas">${s.code.split('').map((c) => `<span>${c}</span>`).join('')}</div>
+      <div class="actions" style="margin-top:18px">
+        <button class="btn btn-primary btn-block" data-act="send-invite" data-code="${s.code}">📤 Envoyer le lien</button>
+        <button class="btn btn-block" data-act="copy-invite" data-code="${s.code}">📋 Copier le lien</button>
+        <button class="btn btn-ghost btn-block" data-act="close">C'est bon, on mange !</button>
+      </div>
+      <p class="hint muted" style="word-break:break-all">${esc(link)}</p>`);
+  }
+
+  function sheetJoin(prefill = '') {
+    openSheet(`
+      <h3>Rejoindre un repas 🔗</h3>
+      <p class="lead">Entrez le code à 6 caractères reçu du groupe.</p>
+      <label class="field"><span>Code du repas</span>
+        <input class="input code-input" id="j-code" maxlength="7" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="K7P2QX" value="${esc(prefill)}" />
+      </label>
+      <p class="note" id="j-msg" hidden></p>
+      <div class="btn-row">
+        <button class="btn btn-ghost" data-act="close">Annuler</button>
+        <button class="btn btn-primary" id="j-go">Continuer</button>
+      </div>`, (root) => {
+      const input = $('#j-code', root);
+      const msg = $('#j-msg', root);
+      const fail = (text) => { msg.textContent = text; msg.hidden = false; };
+      input.addEventListener('input', () => { input.value = sync.normalizeCode(input.value); msg.hidden = true; });
+      const go = async () => {
+        const code = sync.normalizeCode(input.value);
+        if (!sync.validCode(code)) { fail('Le code contient 6 lettres ou chiffres, par exemple K7P2QX.'); return; }
+        if (!sync.ready()) { fail('Le partage n’est pas disponible : vérifiez votre connexion ou la configuration (README).'); return; }
+        const btn = $('#j-go', root);
+        btn.disabled = true; btn.textContent = 'Recherche…';
+        try {
+          const v = await withTimeout(sync.fetch(code), 10000);
+          if (!v) { fail('Aucun repas avec ce code. Vérifiez-le auprès du groupe.'); return; }
+          sheetWhoAmI(code, v);
+        } catch (e) {
+          fail('Impossible de joindre le serveur. Vérifiez votre connexion internet.');
+        } finally {
+          btn.disabled = false; btn.textContent = 'Continuer';
+        }
+      };
+      $('#j-go', root).onclick = go;
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
+      if (prefill) go(); else input.focus();
+    });
+  }
+
+  function sheetWhoAmI(code, v) {
+    const meal = fromRemote(code, v, null);
+    const known = state.sessions.find((x) => x.id === code);
+    openSheet(`
+      <h3>${esc(meal.name)}</h3>
+      <p class="lead">Qui êtes-vous ? Touchez votre prénom, ou ajoutez-vous.</p>
+      <div class="list">
+        ${meal.people.map((p) => `
+          <button class="list-item" data-me="${p.id}">
+            <span class="avatar" style="background:${p.color}">${esc(initial(p.name))}</span>
+            <span class="grow"><b>${esc(p.name)}</b>${known && known.me === p.id ? '<br/><small>c’est vous sur ce téléphone</small>' : ''}</span>
+            <span class="muted">›</span>
+          </button>`).join('')}
+      </div>
+      <div class="field" style="margin-top:18px"><span>Je ne suis pas dans la liste</span>
+        <div class="inline">
+          <input class="input" id="w-name" placeholder="Votre prénom" maxlength="20" autocomplete="given-name" value="${esc(state.myName || '')}" />
+          <button class="btn btn-primary" id="w-add">Rejoindre</button>
+        </div>
+      </div>`, (root) => {
+      root.querySelector('.list').addEventListener('click', (e) => {
+        const b = e.target.closest('[data-me]');
+        if (b) joinMeal(code, v, b.dataset.me);
+      });
+      const add = () => {
+        const name = $('#w-name', root).value.trim();
+        if (!name) { $('#w-name', root).focus(); return; }
+        state.myName = name;
+        const p = { id: uid(), name, color: PERSON_COLORS[meal.people.length % PERSON_COLORS.length], o: Date.now() };
+        const { id, ...rest } = p;
+        v.people = { ...(v.people || {}), [id]: rest };
+        sync.update(code, { ['people/' + id]: rest }).catch(syncError);
+        joinMeal(code, v, id);
+      };
+      $('#w-add', root).onclick = add;
+      $('#w-name', root).addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+    });
+  }
+
+  function sheetAddPerson() {
+    const s = current();
+    if (!s) return;
+    openSheet(`
+      <h3>Ajouter une personne</h3>
+      <p class="lead">${s.shared ? 'Pour quelqu’un sans téléphone. Les autres peuvent rejoindre avec le code.' : 'Elle aura ses propres compteurs.'}</p>
+      <div class="inline">
+        <input class="input" id="p-name" placeholder="Prénom" maxlength="20" autocomplete="off" />
+        <button class="btn btn-primary" id="p-add">Ajouter</button>
+      </div>
+      ${s.shared ? `<button class="btn btn-ghost btn-block" data-act="invite" style="margin-top:12px">🔗 Inviter avec le code</button>` : ''}`, (root) => {
+      const add = () => {
+        const name = $('#p-name', root).value.trim();
+        if (!name) { $('#p-name', root).focus(); return; }
+        const p = addPerson(s, name);
+        ui.person = p.id;
+        closeSheet();
+        render();
+        toast(`${name} a rejoint la table 👋`);
+      };
+      $('#p-add', root).onclick = add;
+      $('#p-name', root).addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } });
+      $('#p-name', root).focus();
     });
   }
 
@@ -622,10 +889,20 @@
         const name = $('#i-name', root).value.trim();
         if (!name) { $('#i-name', root).focus(); return; }
         const kcal = Math.max(0, Math.min(2000, parseInt($('#i-kcal', root).value, 10) || 0));
+        const fields = { name, emoji: draft.emoji, cat: draft.cat, kcal };
+        const s = current();
+        if (s && !s.catalog) s.catalog = state.catalog.map((x) => ({ ...x }));
         if (existing) {
-          Object.assign(state.catalog.find((x) => x.id === existing.id), { name, emoji: draft.emoji, cat: draft.cat, kcal });
+          Object.assign(catalogOf(s).find((x) => x.id === existing.id), fields);
+          if (s && s.shared) {
+            sync.update(s.code, Object.fromEntries(Object.entries(fields).map(([k, val]) => [`catalog/${existing.id}/${k}`, val]))).catch(syncError);
+          }
         } else {
-          state.catalog.push({ id: uid(), name, emoji: draft.emoji, cat: draft.cat, kcal });
+          const id = uid();
+          catalogOf(s).push({ id, ...fields });
+          // Un plat ajouté pendant un repas rejoint aussi la carte par défaut de ce téléphone.
+          if (s && !state.catalog.some((x) => x.name.toLowerCase() === name.toLowerCase())) state.catalog.push({ id, ...fields });
+          if (s && s.shared) sync.update(s.code, { ['catalog/' + id]: { ...fields, o: Date.now() } }).catch(syncError);
         }
         save();
         closeSheet();
@@ -635,7 +912,14 @@
       const del = $('#i-del', root);
       if (del) del.onclick = () => {
         if (!confirm(`Supprimer « ${existing.name} » de la carte ?`)) return;
-        state.catalog = state.catalog.filter((x) => x.id !== existing.id);
+        const s = current();
+        if (s) {
+          if (!s.catalog) s.catalog = state.catalog.map((x) => ({ ...x }));
+          s.catalog = s.catalog.filter((x) => x.id !== existing.id);
+          if (s.shared) sync.update(s.code, { ['catalog/' + existing.id]: null }).catch(syncError);
+        } else {
+          state.catalog = state.catalog.filter((x) => x.id !== existing.id);
+        }
         save();
         closeSheet();
         render();
@@ -646,12 +930,14 @@
 
   function sheetMenu() {
     const s = current();
+    const lead = !s ? 'Votre carte par défaut, utilisée pour les prochains repas.'
+      : s.shared ? 'La carte de ce repas, partagée avec tout le groupe.' : 'La carte de ce repas.';
     openSheet(`
       <h3>La carte du buffet</h3>
-      <p class="lead">Touchez un plat pour le modifier.</p>
+      <p class="lead">${lead} Touchez un plat pour le modifier.</p>
       <button class="btn btn-primary btn-block" data-act="add-item" style="margin-bottom:16px">＋ Ajouter un plat</button>
       ${CATEGORIES.map((c) => {
-        const items = state.catalog.filter((x) => x.cat === c.id);
+        const items = catalogOf(s).filter((x) => x.cat === c.id);
         if (!items.length) return '';
         return `<div class="section-title" style="margin-top:14px">${c.emoji} ${esc(c.name)}</div>
           <div class="list">${items.map((it) => `
@@ -663,8 +949,10 @@
       }).join('')}
       <div class="section-title">Réglages</div>
       <div class="actions" style="margin-top:0">
-        ${s ? '<button class="btn btn-block" data-act="end">✅ Terminer le repas en cours</button>' : ''}
-        <button class="btn btn-ghost btn-block" data-act="reset-catalog">↺ Restaurer la carte par défaut</button>
+        ${s && s.shared ? '<button class="btn btn-block" data-act="invite">🔗 Inviter le groupe</button>' : ''}
+        ${s ? `<button class="btn btn-block" data-act="end">✅ Terminer le repas${s.shared ? ' pour tout le groupe' : ''}</button>` : ''}
+        ${s && s.shared ? '<button class="btn btn-ghost btn-block" data-act="leave">🚪 Quitter ce repas (il continue pour les autres)</button>' : ''}
+        ${s ? '' : '<button class="btn btn-ghost btn-block" data-act="reset-catalog">↺ Restaurer la carte par défaut</button>'}
         <button class="btn btn-danger btn-block" data-act="wipe">Effacer toutes les données</button>
       </div>`);
   }
@@ -697,6 +985,11 @@
     } else {
       toast('Partage indisponible');
     }
+  }
+
+  function copyText(text, okMsg) {
+    if (navigator.clipboard) navigator.clipboard.writeText(text).then(() => toast(okMsg), () => toast(text));
+    else toast(text);
   }
 
   // ---------- Événements ----------
@@ -760,14 +1053,25 @@
     if (cat) { ui.cat = cat.dataset.cat; render(); return; }
 
     const open = t.closest('[data-open]');
-    if (open) { ui.viewSession = open.dataset.open; ui.statsPerson = null; ui.tab = 'stats'; render(); window.scrollTo(0, 0); return; }
+    if (open) {
+      const id = open.dataset.open;
+      ui.viewSession = id; ui.statsPerson = null; ui.tab = 'stats';
+      render(); window.scrollTo(0, 0);
+      // Un repas partagé a pu être complété par les autres depuis : on rafraîchit.
+      const sess = state.sessions.find((x) => x.id === id);
+      if (sess && sess.shared && sync.ready()) {
+        withTimeout(sync.fetch(sess.code), 8000).then((v) => { if (storeRemote(sess.code, v) && ui.viewSession === id) render(); }).catch(() => {});
+      }
+      return;
+    }
 
     const edit = t.closest('[data-edit]');
-    if (edit) { sheetItemForm(state.catalog.find((x) => x.id === edit.dataset.edit)); return; }
+    if (edit) { sheetItemForm(catalogOf(current()).find((x) => x.id === edit.dataset.edit)); return; }
 
     const del = t.closest('[data-del]');
     if (del) {
-      if (!confirm('Supprimer définitivement ce repas ?')) return;
+      const target = state.sessions.find((x) => x.id === del.dataset.del);
+      if (!confirm(target && target.shared ? 'Retirer ce repas de votre historique ? Il reste visible pour les autres membres.' : 'Supprimer définitivement ce repas ?')) return;
       state.sessions = state.sessions.filter((s) => s.id !== del.dataset.del);
       save();
       ui.viewSession = null;
@@ -781,9 +1085,31 @@
     if (!act) return;
     switch (act.dataset.act) {
       case 'new':
-        if (current() && !confirm('Un repas est déjà en cours. Le terminer et en commencer un nouveau ?')) return;
-        if (current()) endSession();
+        if (current() && !confirm(current().shared ? 'Un repas partagé est en cours. Le quitter pour en commencer un nouveau ?' : 'Un repas est déjà en cours. Le terminer et en commencer un nouveau ?')) return;
+        leaveCurrent();
         sheetNewSession();
+        break;
+      case 'join': sheetJoin(); break;
+      case 'invite': if (current() && current().shared) sheetInvite(current()); break;
+      case 'add-person': sheetAddPerson(); break;
+      case 'send-invite': {
+        const link = inviteLink(act.dataset.code);
+        const text = `Rejoins-moi sur Buffet Tracker pour compter ce qu'on mange 🍣 Code : ${act.dataset.code}`;
+        if (navigator.share) navigator.share({ title: 'Buffet Tracker', text, url: link }).catch(() => {});
+        else copyText(link, 'Lien copié 📋');
+        break;
+      }
+      case 'copy-invite': copyText(inviteLink(act.dataset.code), 'Lien copié 📋'); break;
+      case 'rejoin': {
+        const sess = state.sessions.find((x) => x.id === act.dataset.sid);
+        if (sess) sheetJoin(sess.code);
+        break;
+      }
+      case 'leave':
+        if (!confirm('Quitter ce repas ? Il continue pour les autres et vous pourrez le reprendre depuis l’historique.')) return;
+        leaveCurrent();
+        closeSheet(); ui.tab = 'track'; render();
+        toast('Vous avez quitté le repas');
         break;
       case 'close': closeSheet(); break;
       case 'add-item': sheetItemForm(null); break;
@@ -800,7 +1126,7 @@
       case 'end': {
         const s = current();
         if (!s) break;
-        if (!confirm('Terminer ce repas ? Il sera rangé dans l’historique.')) return;
+        if (!confirm(s.shared ? 'Terminer ce repas pour tout le groupe ? Il sera rangé dans l’historique de chacun.' : 'Terminer ce repas ? Il sera rangé dans l’historique.')) return;
         const id = s.id;
         endSession();
         closeSheet();
@@ -819,6 +1145,7 @@
         break;
       case 'wipe':
         if (!confirm('Effacer tous les repas et la carte ? Cette action est irréversible.')) return;
+        stopListening();
         localStorage.removeItem(STORAGE_KEY);
         Object.assign(state, load());
         ui.tab = 'track'; ui.viewSession = null;
@@ -838,5 +1165,24 @@
     window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
   }
 
+  // Lien d'invitation : ?repas=CODE
+  const params = new URLSearchParams(location.search);
+  const invitedCode = sync.normalizeCode(params.get('repas'));
+  if (params.has('repas')) history.replaceState(null, '', location.pathname);
+
   render();
+
+  sync.init().then((ok) => {
+    ui.syncReady = ok;
+    if (ok) {
+      sync.onConnection((online) => { ui.online = online; if (current() && current().shared) render(); });
+      const s = current();
+      if (s && s.shared) listen(s.code);
+    }
+    if (invitedCode) {
+      if (ok) sheetJoin(invitedCode);
+      else toast('Le partage en groupe n’est pas disponible sur ce téléphone');
+    }
+    render();
+  });
 })();

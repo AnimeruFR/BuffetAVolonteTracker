@@ -1,6 +1,8 @@
 // Service worker : met l'application en cache pour qu'elle fonctionne sans réseau au restaurant.
-const CACHE = 'buffet-tracker-v1';
-const ASSETS = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png'];
+const CACHE = 'buffet-tracker-v2';
+const ASSETS = ['./', 'index.html', 'styles.css', 'app.js', 'sync.js', 'firebase-config.js', 'manifest.webmanifest',
+  'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png'];
+const SDK_HOST = 'www.gstatic.com'; // SDK Firebase (versionné, donc mis en cache durablement)
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));
@@ -14,9 +16,21 @@ self.addEventListener('activate', (e) => {
   );
 });
 
-// Réseau d'abord (pour recevoir les mises à jour), cache en secours hors-ligne.
 self.addEventListener('fetch', (e) => {
-  if (e.request.method !== 'GET' || new URL(e.request.url).origin !== location.origin) return;
+  if (e.request.method !== 'GET') return;
+  const url = new URL(e.request.url);
+
+  if (url.hostname === SDK_HOST && url.pathname.startsWith('/firebasejs/')) {
+    e.respondWith(caches.match(e.request).then((hit) => hit || fetch(e.request).then((res) => {
+      const copy = res.clone();
+      caches.open(CACHE).then((c) => c.put(e.request, copy));
+      return res;
+    })));
+    return;
+  }
+  if (url.origin !== location.origin) return;
+
+  // Réseau d'abord (pour recevoir les mises à jour), cache en secours hors-ligne.
   e.respondWith(
     fetch(e.request)
       .then((res) => {
@@ -24,6 +38,6 @@ self.addEventListener('fetch', (e) => {
         caches.open(CACHE).then((c) => c.put(e.request, copy));
         return res;
       })
-      .catch(() => caches.match(e.request).then((r) => r || caches.match('index.html')))
+      .catch(() => caches.match(e.request, { ignoreSearch: true }).then((r) => r || caches.match('index.html')))
   );
 });
