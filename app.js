@@ -24,7 +24,7 @@
     ['Onigiri', '🍙', 'sushi', 180],
     ['Bento', '🍱', 'sushi', 120],
     ['Nem', '🌯', 'entree', 110],
-    ['Ravioli vapeur', '🥟', 'entree', 45],
+    ['Gyoza', '🥟', 'entree', 45],
     ['Beignet crevette', '🍤', 'entree', 70],
     ['Soupe miso', '🥣', 'entree', 40],
     ['Salade', '🥗', 'entree', 80],
@@ -72,10 +72,22 @@
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
         const data = JSON.parse(raw);
-        if (data && Array.isArray(data.catalog) && Array.isArray(data.sessions)) return data;
+        if (data && Array.isArray(data.catalog) && Array.isArray(data.sessions)) return migrate(data);
       }
     } catch (e) { /* données illisibles : on repart de zéro */ }
     return { catalog: DEFAULT_CATALOG.map((x) => ({ ...x })), sessions: [], currentId: null };
+  }
+
+  // Renomme les plats par défaut déjà enregistrés sur le téléphone (sauf s'ils ont été modifiés).
+  const RENAMED = { d7: ['Ravioli vapeur', 'Gyoza'] };
+  function migrate(data) {
+    const fix = (it) => { const r = it && RENAMED[it.id]; if (r && it.name === r[0]) it.name = r[1]; };
+    data.catalog.forEach(fix);
+    data.sessions.filter((x) => !x.shared).forEach((x) => {
+      (x.catalog || []).forEach(fix);
+      Object.values(x.items || {}).forEach(fix);
+    });
+    return data;
   }
 
   const state = load();
@@ -85,6 +97,7 @@
   function save() {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) { /* stockage plein */ }
   }
+  save(); // enregistre tout de suite les éventuels renommages de migrate()
 
   const current = () => state.sessions.find((s) => s.id === state.currentId) || null;
   const catById = (id) => CATEGORIES.find((c) => c.id === id) || { id, name: 'Autre', emoji: '🍽️' };
