@@ -225,6 +225,7 @@
     stopLive = sync.watch(code, (v) => {
       const s = storeRemote(code, v);
       if (!s) return;
+      if (!s.end) renameInSharedMeal(s);
       if (s.end && state.currentId === code) {
         state.currentId = null;
         save();
@@ -235,6 +236,17 @@
       render();
     });
   }
+  // Applique les renommages de la carte par défaut à un repas partagé déjà commencé (pour tout le groupe).
+  function renameInSharedMeal(s) {
+    const patch = {};
+    for (const [id, [from, to]] of Object.entries(RENAMED)) {
+      const it = s.catalog.find((x) => x.id === id);
+      if (it && it.name === from) { it.name = to; patch[`catalog/${id}/name`] = to; }
+      if (s.items[id] && s.items[id].name === from) { s.items[id].name = to; patch[`items/${id}/name`] = to; }
+    }
+    if (Object.keys(patch).length) { save(); sync.update(s.code, patch).catch(syncError); }
+  }
+
   function stopListening() {
     if (stopLive) stopLive();
     stopLive = null;
